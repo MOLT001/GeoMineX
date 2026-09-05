@@ -1,0 +1,4204 @@
+{
+  "info": {
+    "name": "GeoMineX API — v1",
+    "description": "Every implemented `/api/v1` route, Phase 1 and Phase 2 — PRD §13. Twelve folders in the order a first run should follow: Infrastructure, Auth, Users, Subsidiaries, Documents, Reports, Dashboard, Queries, Topics, Analytics, Audit, Failure scenarios.\n\n`PATCH /extracted-fields/:id` lives in the **Documents** folder rather than one of its own: it is mounted at its own path (§10.2) but it is an operation on a document that has already been processed, and separating it hides the upload → process → review → override sequence the folder exists to show.\n\n## What each folder contains\n\nThe happy path for every route, followed by the §9.9 failure modes that actually apply to it, each as its own request:\n\n- `400 VALIDATION_ERROR` — a SHAPE failure, caught by Zod before any service runs. Carries `error.fields`.\n- `400 INVALID_REQUEST` — schema-valid but logically invalid (a range ending before it starts, a retry on a document that did not fail, a review of an answer that does not exist yet). No `fields` map, because nothing is wrong with the shape.\n- `400 CONFIRM_TEXT_MISMATCH` / `409 CONFLICT` — where a typed confirmation or a uniqueness constraint exists.\n- `401` missing token, and `401` expired or revoked token as a separate request, because `UNAUTHORIZED` and `TOKEN_EXPIRED` mean different things to a frontend.\n- `403` where a role gate exists.\n- `404 unknown id` **and** `404 out-of-scope id`, always as **two** requests. Their responses are identical on purpose: PRD §9.1 forbids telling a caller that a resource exists in a subsidiary they cannot reach, so the collection has to show the pair to make that convention visible.\n- `429` where a stricter limiter applies (`aiLimiter` on asks and retries, `analyticsLimiter` shared by Topics and Analytics).\n\nWhere a mode is absent, the folder description says why — no role gate on Dashboard/Topics/Analytics, no path parameter to be unknown, no uniqueness constraint — rather than leaving a silent gap. Test scripts assert the envelope shape and, on failures, `error.code`.\n\n## First run\n\n1. `npm run seed`, then start the dev server. Select the **GeoMineX — Local** environment: the request chain writes to environment scope, which outranks collection scope.\n2. **Auth** → `Request sign-in code`, copy the code from the server log into `otpCode`, then `Verify code`. That captures `accessToken` and `userId`.\n3. **Subsidiaries** → `List subsidiaries` captures `subsidiaryId`. Run `Create subsidiary` and paste the new id into `otherSubsidiaryId` by hand — the out-of-scope requests need a second one.\n4. **Documents** → upload a file, then re-send `GET /documents/:id` until `status` is `validated`. Chunks, extracted fields, report drafting and query answers all depend on reaching that state.\n5. Everything else runs in folder order.\n\n## Two asynchronous contracts\n\nNeither endpoint returns its result in the response that creates the work:\n\n- `POST /documents` returns **201 `queued`**. OCR and extraction run in a worker; poll `GET /documents/:id`.\n- `POST /queries` returns **201 `queued` with `responseText: null` and `citations: []`**. The answer is produced by a worker and collected by polling `GET /queries/:id`. Running the Queries folder top to bottom and stopping at the 201 does not mean the answer is missing — it has not been generated yet. The Queries folder description explains why the endpoint is built this way.\n\n## Identities the failure requests need\n\nFour environment variables are access tokens for people other than the admin. Sign in as each and paste their `accessToken`:\n\n- `cilAccessToken` — a `cil_user` granted `{{subsidiaryId}}`. Shows `403` on the admin-only actions (publish a report, approve a query answer) while the resource itself is fully visible to them — which is exactly why those are 403 and not 404.\n- `mocAccessToken` — a `moc_official`. Read-only across subsidiaries (§2), so it shows `403` on every write gate.\n- `outOfScopeAccessToken` — a non-admin granted only `{{otherSubsidiaryId}}`. Shows the 404-not-403 convention against real, existing ids.\n- `expiredAccessToken` — any token past its lifetime, or one whose session was revoked via `DELETE /auth/sessions/:id`.\n\n`unknownId` is a fixed, well-formed ObjectId (`000000000000000000000000`) that exists in no collection — the other half of each 404 pair.\n\nThe refresh credential is an HttpOnly cookie: Postman stores and replays it automatically, and it is never exposed to a script.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{accessToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:5001"
+    },
+    {
+      "key": "adminEmail",
+      "value": "mavdivu@gmail.com"
+    },
+    {
+      "key": "otpCode",
+      "value": ""
+    },
+    {
+      "key": "accessToken",
+      "value": ""
+    },
+    {
+      "key": "inviteToken",
+      "value": ""
+    },
+    {
+      "key": "userId",
+      "value": ""
+    },
+    {
+      "key": "sessionId",
+      "value": ""
+    },
+    {
+      "key": "subsidiaryId",
+      "value": ""
+    },
+    {
+      "key": "documentId",
+      "value": ""
+    },
+    {
+      "key": "templateId",
+      "value": ""
+    },
+    {
+      "key": "reportId",
+      "value": ""
+    },
+    {
+      "key": "queryId",
+      "value": ""
+    },
+    {
+      "key": "unknownId",
+      "value": "000000000000000000000000",
+      "description": "A well-formed ObjectId that exists in no collection. Used by every \"404 — unknown id\" request, whose response must be indistinguishable from the matching \"404 — out-of-scope id\" request (PRD §9.1)."
+    },
+    {
+      "key": "extractedFieldId",
+      "value": "",
+      "description": "Set by GET /documents/:id/extracted-fields."
+    },
+    {
+      "key": "reportTitle",
+      "value": "",
+      "description": "Set by POST /reports — the archive confirmation must equal it exactly (§8.3)."
+    },
+    {
+      "key": "otherSubsidiaryId",
+      "value": "",
+      "description": "A second subsidiary, held only by outOfScopeAccessToken's user."
+    },
+    {
+      "key": "cilAccessToken",
+      "value": "",
+      "description": "cil_user granted {{subsidiaryId}} — shows 403 on admin-only actions against a visible resource."
+    },
+    {
+      "key": "mocAccessToken",
+      "value": "",
+      "description": "moc_official — read-only across subsidiaries (§2); shows 403 on write gates."
+    },
+    {
+      "key": "outOfScopeAccessToken",
+      "value": "",
+      "description": "Non-admin granted ONLY {{otherSubsidiaryId}} — shows 404-not-403 on real ids."
+    },
+    {
+      "key": "expiredAccessToken",
+      "value": "",
+      "description": "A token past its lifetime or whose session was revoked — shows 401 TOKEN_EXPIRED / TOKEN_INVALID."
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Infrastructure",
+      "description": "Unauthenticated. Mounted outside the API rate limiter.",
+      "item": [
+        {
+          "name": "Service index",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": []
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Standard envelope\", () => pm.expect(pm.response.json()).to.have.property(\"success\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Health (liveness)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Standard envelope\", () => pm.expect(pm.response.json()).to.have.property(\"success\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Ready (DB check)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/ready",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "ready"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Standard envelope\", () => pm.expect(pm.response.json()).to.have.property(\"success\"));",
+                  "pm.test(\"Database connected\", () => pm.expect(pm.response.json().data.database).to.eql(\"connected\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "API index",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Standard envelope\", () => pm.expect(pm.response.json()).to.have.property(\"success\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. Auth",
+      "description": "Passwordless email OTP. Run 1 then 2 to get a token.",
+      "item": [
+        {
+          "name": "1. Request sign-in code",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/request-code",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "request-code"
+              ]
+            },
+            "description": "Always 200, even for an unknown account — that is the anti-enumeration rule (§9.3). No code means the address is not a live account.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{adminEmail}}\"\n}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Standard envelope\", () => pm.expect(pm.response.json()).to.have.property(\"success\"));",
+                  "pm.test(\"Generic response\", () => pm.expect(pm.response.json().data.message).to.include(\"If that account exists\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2. Verify code -> access token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/verify-code",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-code"
+              ]
+            },
+            "description": "Set the otpCode variable from your dev terminal first. Captures accessToken for the whole collection.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"code\": \"{{otpCode}}\"\n}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Standard envelope\", () => pm.expect(pm.response.json()).to.have.property(\"success\"));",
+                  "const d = pm.response.json().data;",
+                  "if (d.accessToken) { pm.environment.set(\"accessToken\", d.accessToken); }",
+                  "if (d.user.id) { pm.environment.set(\"userId\", d.user.id); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refresh (rotates session)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "refresh"
+              ]
+            },
+            "description": "Uses the HttpOnly cookie. Issues a NEW credential and revokes the presented one; replaying a spent one revokes the whole family.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Standard envelope\", () => pm.expect(pm.response.json()).to.have.property(\"success\"));",
+                  "const d = pm.response.json().data;",
+                  "if (d.accessToken) { pm.environment.set(\"accessToken\", d.accessToken); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List own sessions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/sessions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "sessions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Standard envelope\", () => pm.expect(pm.response.json()).to.have.property(\"success\"));",
+                  "const d = pm.response.json().data;",
+                  "if (d[0]) pm.environment.set(\"sessionId\", d[0].id);",
+                  "pm.test(\"No token material leaked\", () => pm.expect(pm.response.text()).to.not.include(\"tokenHash\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Revoke one session",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/sessions/{{sessionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "sessions",
+                "{{sessionId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Standard envelope\", () => pm.expect(pm.response.json()).to.have.property(\"success\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Accept invite (public)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/invites/accept",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "invites",
+                "accept"
+              ]
+            },
+            "description": "Single-use, expires in 72h. Activates the account AND signs in — this is how a new user joins; there is no signup.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"{{inviteToken}}\",\n  \"name\": \"New User\"\n}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "logout"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Standard envelope\", () => pm.expect(pm.response.json()).to.have.property(\"success\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Users",
+      "description": "Admin-only except /me.",
+      "item": [
+        {
+          "name": "My profile",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "me"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Standard envelope\", () => pm.expect(pm.response.json()).to.have.property(\"success\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Invite a user (admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/invite",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "invite"
+              ]
+            },
+            "description": "Roles: admin | cil_user | moc_official. Omit subsidiaryAccess for admins — they are unscoped.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"cil.user@cil.gov.in\",\n  \"name\": \"CIL User\",\n  \"role\": \"cil_user\",\n  \"subsidiaryAccess\": [\n    \"{{subsidiaryId}}\"\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 201\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"Standard envelope\", () => pm.expect(pm.response.json()).to.have.property(\"success\"));",
+                  "const d = pm.response.json().data;",
+                  "if (d.id) { pm.environment.set(\"userId\", d.id); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List users",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users?page=1&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Standard envelope\", () => pm.expect(pm.response.json()).to.have.property(\"success\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get user by id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/{{userId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "{{userId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Standard envelope\", () => pm.expect(pm.response.json()).to.have.property(\"success\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update user",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/{{userId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "{{userId}}"
+              ]
+            },
+            "description": "Deactivating requires confirm = the target email. An admin cannot demote or deactivate themselves.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Renamed User\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Standard envelope\", () => pm.expect(pm.response.json()).to.have.property(\"success\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Grant subsidiary access",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/{{userId}}/subsidiary-access",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "{{userId}}",
+                "subsidiary-access"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"subsidiaryId\": \"{{subsidiaryId}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Standard envelope\", () => pm.expect(pm.response.json()).to.have.property(\"success\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Revoke subsidiary access",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/{{userId}}/subsidiary-access/{{subsidiaryId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "{{userId}}",
+                "subsidiary-access",
+                "{{subsidiaryId}}"
+              ]
+            },
+            "description": "confirm must equal the subsidiary CODE, or you get 400 CONFIRM_TEXT_MISMATCH.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"confirm\": \"BCCL\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Force-logout a user (admin)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/{{userId}}/sessions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "{{userId}}",
+                "sessions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Standard envelope\", () => pm.expect(pm.response.json()).to.have.property(\"success\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Subsidiaries",
+      "description": "Scoped: a CIL user sees only granted subsidiaries.",
+      "item": [
+        {
+          "name": "List subsidiaries",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subsidiaries",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subsidiaries"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Standard envelope\", () => pm.expect(pm.response.json()).to.have.property(\"success\"));",
+                  "const d = pm.response.json().data;",
+                  "const b = d.find((s) => s.code === \"BCCL\") || d[0];",
+                  "if (b) pm.environment.set(\"subsidiaryId\", b.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create subsidiary (admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subsidiaries",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subsidiaries"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Test Coalfields Limited\",\n  \"code\": \"TCL\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 201\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"Standard envelope\", () => pm.expect(pm.response.json()).to.have.property(\"success\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Documents",
+      "description": "Ingestion and traceability — PRD §4.1, §4.5, §5.8, §9.4, §10.2.\n\nUpload is the only multipart route (field name `file`); everything else is JSON. Listing is CURSOR-paginated (§9.8) because the collection takes continuous inserts while a reviewer pages through it — offset paging would silently skip and duplicate rows.\n\nProcessing is ASYNCHRONOUS: the upload returns 201 with `status: \"queued\"`. Poll `GET /documents/:id` until `status` becomes `validated` or `failed`; chunks and extracted fields do not exist until then.\n\nOut-of-scope reads return 404, never 403 (§9.1) — the last two requests in this folder are deliberately kept separate so that convention is visible.",
+      "item": [
+        {
+          "name": "POST /documents (upload, multipart)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "description": "Pick a local PDF / scan / spreadsheet / image. The field name must be exactly `file`; anything else is a 400 VALIDATION_ERROR raised by the controller, not by multer."
+                },
+                {
+                  "key": "subsidiaryId",
+                  "value": "{{subsidiaryId}}",
+                  "type": "text",
+                  "description": "Required. Checked against the caller's grants before it reaches a query (§8.3); a subsidiary you do not hold is 404."
+                },
+                {
+                  "key": "tags",
+                  "value": "quarterly,production",
+                  "type": "text",
+                  "description": "Optional operator tags on top of the automatic ones (§4.1). Multipart sends strings, so a comma-separated list and a repeated field are both accepted. Max 10 tags, 40 chars each."
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/api/v1/documents",
+            "description": "PRD §4.1, §9.4. Role gate is `admin` + `cil_user`: MoC officials are read-only across subsidiaries (§2).\n\nThe body limit here is `MAX_UPLOAD_BYTES` enforced by multer, NOT the global 10kb JSON limit — raising the global limit to fit a scanned PDF would remove body-size protection from every JSON endpoint in the system. An oversized file returns 413 `PAYLOAD_TOO_LARGE`.\n\nReturns 201 with the row still `queued`; the OCR/extraction worker fills it in afterwards."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const d = pm.response.json().data;",
+                  "pm.test('Starts unprocessed', () => pm.expect(['queued', 'processing']).to.include(d.status));",
+                  "pm.test('Storage key is never exposed (§9.4)', () => pm.expect(pm.response.text()).to.not.include('storageKey'));",
+                  "pm.environment.set('documentId', d.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /documents (cursor-paginated, filtered)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/documents?limit=25&status=validated&type=pdf&requiresReview=false&subsidiaryId={{subsidiaryId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "documents"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "25",
+                  "description": "1..100, default 25."
+                },
+                {
+                  "key": "cursor",
+                  "value": "",
+                  "description": "The `pagination.nextCursor` from the previous page. Disabled on the first call.",
+                  "disabled": true
+                },
+                {
+                  "key": "status",
+                  "value": "validated",
+                  "description": "queued | processing | validated | failed"
+                },
+                {
+                  "key": "type",
+                  "value": "pdf",
+                  "description": "pdf | scan | spreadsheet | image"
+                },
+                {
+                  "key": "requiresReview",
+                  "value": "false",
+                  "description": "A string enum 'true'/'false', not a coerced boolean: z.coerce.boolean() treats the literal string 'false' as true, so the parameter would do the opposite of what it says."
+                },
+                {
+                  "key": "subsidiaryId",
+                  "value": "{{subsidiaryId}}",
+                  "description": "Optional narrowing. Always intersected with the caller's grants."
+                },
+                {
+                  "key": "q",
+                  "value": "production",
+                  "description": "Text search over FILENAME AND TAGS ONLY — never over extracted values (§8.2).",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "PRD §4.1, §9.8. Cursor pagination, so `pagination` carries `nextCursor` and `limit` and deliberately omits `total`: a total is not meaningful for a set being written to concurrently. Feed `nextCursor` back as `?cursor=` for the next page."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('Cursor envelope, not offset (§9.8)', () => {",
+                  "  pm.expect(body.success).to.be.true;",
+                  "  pm.expect(body.data).to.be.an('array');",
+                  "  pm.expect(body.pagination).to.have.property('nextCursor');",
+                  "  pm.expect(body.pagination).to.not.have.property('total');",
+                  "});",
+                  "if (!pm.environment.get('documentId') && body.data.length) pm.environment.set('documentId', body.data[0].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /documents/:id",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/documents/{{documentId}}",
+            "description": "PRD §4.1, §9.4, §9.5. The polling endpoint while the worker runs.\n\n`injectionSuspected` travels to the client so a reviewer knows why a document is in the queue, but `injectionRuleIds` does not — publishing which patterns fired tells an author exactly which ones to avoid. `storageKey` is never serialized either: a client must not be able to construct or guess a storage path."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json().data;",
+                  "pm.test('Returns the requested document', () => pm.expect(d.id).to.eql(pm.environment.get('documentId')));",
+                  "pm.test('Processing state is visible', () => pm.expect(['queued', 'processing', 'validated', 'failed']).to.include(d.status));",
+                  "pm.test('No storage path and no rule ids leak (§9.4, §9.5)', () => {",
+                  "  pm.expect(pm.response.text()).to.not.include('storageKey');",
+                  "  pm.expect(pm.response.text()).to.not.include('injectionRuleIds');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /documents/:id/file (original, as attachment)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/documents/{{documentId}}/file",
+            "description": "PRD §5.8, §9.4 — the most security-sensitive route in the system. Scope is re-checked on every download and the fetch is audited.\n\nAlways sent as an ATTACHMENT with `X-Content-Type-Options: nosniff`, so an uploaded file can never be rendered inline in the API's own origin. The filename is RFC 5987 encoded, so a crafted filename cannot inject extra header directives."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Never rendered inline', () => pm.expect(pm.response.headers.get('Content-Disposition')).to.include('attachment'));",
+                  "pm.test('nosniff is set', () => pm.expect(pm.response.headers.get('X-Content-Type-Options')).to.eql('nosniff'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /documents/:id/chunks",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/documents/{{documentId}}/chunks",
+            "description": "PRD §5.8, §8.1 — the passage-level half of traceability. Each chunk carries `chunkIndex`, `pageNumber` and `section`, which is exactly the tuple a query citation points at, so the client resolves a citation to its source text without ever parsing prose. Empty until the document reaches `validated`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Array of chunks', () => pm.expect(pm.response.json().data).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /documents/:id/extracted-fields",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/documents/{{documentId}}/extracted-fields",
+            "description": "PRD §4.1, §4.5. `requiresReview` is derived per field from `OCR_REVIEW_THRESHOLD`: at or below the threshold a figure must not be treated as verified. Captures `extractedFieldId` for the override request below."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const rows = pm.response.json().data;",
+                  "pm.test('Array of fields', () => pm.expect(rows).to.be.an('array'));",
+                  "if (rows.length) pm.environment.set('extractedFieldId', rows[0].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "PATCH /extracted-fields/:id (manual override)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"value\": \"1250000\",\n  \"reason\": \"OCR read the thousands separator as a digit; corrected against page 4 of the source scan.\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/extracted-fields/{{extractedFieldId}}",
+            "description": "PRD §4.5, §9.6, §10.2. Mounted as its own `/extracted-fields/:id` family, not nested under the document, matching the endpoint family the PRD specifies.\n\n`reason` is REQUIRED (3..500 chars): an override is only auditable if the *why* is recorded alongside the who, when and what. The pre-override figure is preserved as `originalValue`, so a correction never destroys the machine reading. Role gate is `admin` + `cil_user` — a read-only MoC official cannot restate a figure."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const f = pm.response.json().data;",
+                  "pm.test('Override is attributed and reasoned (§4.5)', () => {",
+                  "  pm.expect(f.overriddenBy).to.be.a('string');",
+                  "  pm.expect(f.overrideReason).to.be.a('string');",
+                  "  pm.expect(f.overriddenAt).to.not.be.null;",
+                  "});",
+                  "pm.test('Machine reading is preserved, not destroyed', () => pm.expect(f).to.have.property('originalValue'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /documents/:id/retry (failed documents only)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/documents/{{documentId}}/retry",
+            "description": "PRD §9.7 — retry is an EXPLICIT, authorized, rate-limitable endpoint rather than a hidden internal loop, so a stuck job stays observable.\n\nOnly a document whose `status` is `failed` can be retried, and only while attempts remain below the dead-letter ceiling. Point `documentId` at a failed document before running this; against any other status it returns 400 `INVALID_REQUEST` — that case has its own request below. Role gate is `admin` + `cil_user`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Re-queued for processing', () => pm.expect(['queued', 'processing']).to.include(pm.response.json().data.status));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 VALIDATION_ERROR — limit above the cap, unknown status",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/documents?limit=500&status=archived",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "documents"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "500",
+                  "description": "The cap is 100."
+                },
+                {
+                  "key": "status",
+                  "value": "archived",
+                  "description": "Not a document status — that enum belongs to reports."
+                }
+              ]
+            },
+            "description": "PRD §9.2, §9.8. Zod rejects the request before any service sees it, and `error.fields` names each offending path so the client can mark the right input. These query bounds are COST bounds as well as correctness bounds."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "const e = pm.response.json().error;",
+                  "pm.test('VALIDATION_ERROR with per-field detail', () => {",
+                  "  pm.expect(e.code).to.eql('VALIDATION_ERROR');",
+                  "  pm.expect(e.fields).to.be.an('object');",
+                  "  pm.expect(Object.keys(e.fields)).to.include.members(['limit', 'status']);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 VALIDATION_ERROR — override with no usable reason",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"value\": \"1250000\",\n  \"reason\": \"no\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/extracted-fields/{{extractedFieldId}}",
+            "description": "PRD §4.5. `reason` has a 3-character floor precisely so that \"ok\" cannot stand in for an audit justification."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "const e = pm.response.json().error;",
+                  "pm.test('VALIDATION_ERROR names reason', () => {",
+                  "  pm.expect(e.code).to.eql('VALIDATION_ERROR');",
+                  "  pm.expect(e.fields).to.have.property('reason');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 INVALID_REQUEST — retry a document that did not fail",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/documents/{{documentId}}/retry",
+            "description": "PRD §9.8. Schema-VALID (a well-formed id) but logically invalid (the document is not in `failed`), which is exactly the split `INVALID_REQUEST` exists for, as distinct from `VALIDATION_ERROR` which is a SHAPE failure. Run this while `documentId` points at a queued or validated document."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('INVALID_REQUEST, not VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_REQUEST'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "401 — missing token",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/documents",
+            "description": "PRD §9.1. `documentRouter.use(requireAuth)` sits above every route in the family, so there is no unauthenticated document surface at all."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('UNAUTHORIZED', () => pm.expect(pm.response.json().error.code).to.eql('UNAUTHORIZED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "401 — expired or revoked token",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{expiredAccessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/documents",
+            "description": "PRD §9.3, §9.8. Set `expiredAccessToken` to a token past its lifetime, or reuse an access token after revoking its session with `DELETE /auth/sessions/:id`.\n\nAn expired signature gives `TOKEN_EXPIRED`; a deactivated user or a revoked session gives `TOKEN_INVALID` with a deliberately generic message, because the response must not reveal WHICH check failed. `TOKEN_EXPIRED` is what lets the frontend tell \"refresh normally\" apart from \"re-authenticate\"."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('TOKEN_EXPIRED or TOKEN_INVALID', () => pm.expect(['TOKEN_EXPIRED', 'TOKEN_INVALID']).to.include(pm.response.json().error.code));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "403 — MoC official cannot upload",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mocAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "description": "Any local file; the role gate refuses before the bytes are read."
+                },
+                {
+                  "key": "subsidiaryId",
+                  "value": "{{subsidiaryId}}",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/api/v1/documents",
+            "description": "PRD §2, §9.1. MoC officials are read-only across subsidiaries.\n\n403, NOT 404: reaching a role-gated endpoint means the caller may legitimately know the route exists — only the ACTION is denied. The 404 convention applies to cross-subsidiary RESOURCE access, demonstrated separately below."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 403', () => pm.response.to.have.status(403));",
+                  "pm.test('FORBIDDEN, not NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('FORBIDDEN'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "403 — MoC official cannot override a figure",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mocAccessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"value\": \"9999999\",\n  \"reason\": \"Attempted restatement by a read-only reviewer.\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/extracted-fields/{{extractedFieldId}}",
+            "description": "PRD §2, §4.5. The role gate runs ahead of the service, so the override is refused without the field ever being loaded."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 403', () => pm.response.to.have.status(403));",
+                  "pm.test('FORBIDDEN', () => pm.expect(pm.response.json().error.code).to.eql('FORBIDDEN'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "404 — unknown id (no such document)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/documents/{{unknownId}}",
+            "description": "PRD §9.1. `unknownId` is a well-formed ObjectId that exists nowhere, so it passes schema validation and then misses on the scoped read. Compare the response with the next request — the two are deliberately indistinguishable."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "404 — out-of-scope id (exists, other subsidiary)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{outOfScopeAccessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/documents/{{documentId}}",
+            "description": "PRD §9.1 — THE CONVENTION THIS PAIR OF REQUESTS EXISTS TO MAKE VISIBLE.\n\n`documentId` is a REAL document living in `{{subsidiaryId}}`. `outOfScopeAccessToken` belongs to a non-admin granted only `{{otherSubsidiaryId}}`. The answer is 404 `NOT_FOUND` — indistinguishable from the previous request's response — and NOT 403, because a 403 here would confirm that a document with this id exists in another subsidiary. The scope clause is folded into the query itself, so the row is never loaded into memory.\n\nSetup: create a second subsidiary and store its id in `otherSubsidiaryId`, invite a `cil_user` with `subsidiaryAccess: [\"{{otherSubsidiaryId}}\"]`, sign in as them, and store their access token in `outOfScopeAccessToken`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('NOT_FOUND — existence is never disclosed', () => pm.expect(pm.response.json().error.code).to.eql('NOT_FOUND'));",
+                  "pm.test('Not 403 — a 403 here would confirm the row exists', () => pm.expect(pm.response.code).to.not.eql(403));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. Reports",
+      "description": "Report templates and the draft → publish → archive lifecycle — PRD §4.2, §8.1, §8.3, §9.6, §10.2.\n\nTwo mount points: `/report-templates` (the shape a report is drafted into) and `/reports` (the drafts themselves).\n\nUnlike documents and the query log, report lists are OFFSET-paginated (`total`, `page`, `limit`, `totalPages`) — §9.8 reserves cursor pagination for append-heavy lists; a filtered report list is stable enough for offsets.\n\nTwo separations of duty are visible here: drafting excludes read-only MoC officials (§2), and PUBLISHING is admin-only even though CIL users may draft (§11.5) — the person putting a figure on record is not the person who wrote it.\n\nRUN ORDER NOTE: the archive happy path is the LAST request in this folder, after the `CONFIRM_TEXT_MISMATCH` request. Archiving is terminal, and `archiveReport` rejects an already-archived report with `INVALID_REQUEST` *before* it ever compares the confirmation text — so the mismatch case is only observable while the report is still live.",
+      "item": [
+        {
+          "name": "GET /report-templates",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/report-templates",
+            "description": "PRD §4.2. A template with an empty `subsidiaryScope` is offered to everyone; a scoped template is offered only to users holding one of its subsidiaries. Admins see all. Captures `templateId` for the create-report request."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const rows = pm.response.json().data;",
+                  "pm.test('Array of templates', () => pm.expect(rows).to.be.an('array'));",
+                  "if (rows.length) pm.environment.set('templateId', rows[0].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /report-templates (admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Quarterly Production Compliance\",\n  \"description\": \"Section skeleton for the quarterly production and compliance return.\",\n  \"sections\": [\n    { \"heading\": \"Production Summary\", \"body\": \"\" },\n    { \"heading\": \"Safety and Compliance\", \"body\": \"\" },\n    { \"heading\": \"Environmental Clearances\", \"body\": \"\" }\n  ],\n  \"subsidiaryScope\": []\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/report-templates",
+            "description": "PRD §4.2. Admin only — a template defines the shape every subsidiary's return is filed in, so it is not a per-subsidiary edit.\n\n`subsidiaryScope: []` means \"available to everyone\". Names are unique among non-deleted templates; a repeat is 409 `CONFLICT` (its own request below)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const t = pm.response.json().data;",
+                  "pm.test('Versioned from the start', () => pm.expect(t.version).to.be.a('number'));",
+                  "pm.environment.set('templateId', t.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /reports (offset-paginated, filtered)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/reports?page=1&limit=20&status=draft&subsidiaryId={{subsidiaryId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "reports"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "1-based, default 1."
+                },
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "description": "1..100, default 20."
+                },
+                {
+                  "key": "status",
+                  "value": "draft",
+                  "description": "draft | published | archived"
+                },
+                {
+                  "key": "subsidiaryId",
+                  "value": "{{subsidiaryId}}",
+                  "description": "Optional narrowing; always intersected with the caller's grants."
+                },
+                {
+                  "key": "templateId",
+                  "value": "{{templateId}}",
+                  "description": "Optional narrowing by template.",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "PRD §9.8 — OFFSET pagination here, deliberately unlike documents/queries/audit logs. A filtered report list is a stable set, so `total`, `page`, `limit` and `totalPages` are meaningful and worth having."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('Offset envelope, not cursor (§9.8)', () => {",
+                  "  pm.expect(body.data).to.be.an('array');",
+                  "  pm.expect(body.pagination).to.include.all.keys('total', 'page', 'limit', 'totalPages');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /reports (draft from validated documents)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Q2 FY2026 Production and Compliance Return\",\n  \"templateId\": \"{{templateId}}\",\n  \"subsidiaryId\": \"{{subsidiaryId}}\",\n  \"sourceDocumentIds\": [\"{{documentId}}\"]\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/reports",
+            "description": "PRD §4.2, §8.1. Role gate is `admin` + `cil_user`; drafting is a write, so read-only MoC officials are excluded (§2).\n\nOnly `validated` documents may be cited — a report must never cite a file whose processing failed. A source document that is out of scope or unknown is 404 (its own request below); one that is in scope but not validated is 400 `INVALID_REQUEST`.\n\nCitations come back as STRUCTURED METADATA (`documentId`, `chunkIndex`, `pageNumber`, `section`, `confidenceScore`), separate from the prose (§8.1) — the client never parses a section body to find a source. `hasUnreviewedFigures` flags a draft that leans on a low-confidence extraction."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const r = pm.response.json().data;",
+                  "pm.test('Created as a draft', () => pm.expect(r.status).to.eql('draft'));",
+                  "pm.test('Citations are structured, not prose (§8.1)', () => pm.expect(r.citations).to.be.an('array'));",
+                  "pm.environment.set('reportId', r.id);",
+                  "pm.environment.set('reportTitle', r.title);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /reports/:id",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/reports/{{reportId}}",
+            "description": "PRD §4.2, §5.8. `sourceDocumentLinks` and `citations` are the traceability path back to `GET /documents/:id/chunks`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const r = pm.response.json().data;",
+                  "pm.test('Returns the requested report', () => pm.expect(r.id).to.eql(pm.environment.get('reportId')));",
+                  "pm.test('Traceable to its sources (§5.8)', () => pm.expect(r.sourceDocumentLinks).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /reports/:id/versions",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/reports/{{reportId}}/versions",
+            "description": "PRD §4.2, §9.6. Every edit snapshots the previous section text with its `changeSummary`, so a published figure can be traced back to the wording it replaced. Read-only for every role that can see the report."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Array of versions', () => pm.expect(pm.response.json().data).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "PATCH /reports/:id (edit a draft)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sections\": [\n    { \"heading\": \"Production Summary\", \"body\": \"Raw coal production for the quarter was 12.5 lakh tonnes against a target of 12.0 lakh tonnes.\" },\n    { \"heading\": \"Safety and Compliance\", \"body\": \"No reportable incidents in the period.\" },\n    { \"heading\": \"Environmental Clearances\", \"body\": \"All clearances current.\" }\n  ],\n  \"changeSummary\": \"Filled the production and safety sections from the Q2 return.\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/reports/{{reportId}}",
+            "description": "PRD §4.2, §9.6. Role gate is `admin` + `cil_user`.\n\nOnly DRAFTS can be edited: once published, a report is on record and editing it returns 400 `INVALID_REQUEST` (its own request below). Each accepted edit bumps `currentVersion` and appends to the version history."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const r = pm.response.json().data;",
+                  "pm.test('Still a draft', () => pm.expect(r.status).to.eql('draft'));",
+                  "pm.test('Version advanced (§9.6)', () => pm.expect(r.currentVersion).to.be.above(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /reports/:id/publish (admin only)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/reports/{{reportId}}/publish",
+            "description": "PRD §4.2, §11.5 — SEPARATION OF DUTIES. Admin only, deliberately not open to the CIL users who draft: in a system whose output feeds parliamentary answers, the person writing a figure is not the person putting it on record.\n\n200, not 201: an action-style POST that creates no new resource (§10.3). `publishedBy` and `publishedAt` are recorded and the transition is audited."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const r = pm.response.json().data;",
+                  "pm.test('Now published', () => pm.expect(r.status).to.eql('published'));",
+                  "pm.test('Attributed to a publisher (§9.6)', () => {",
+                  "  pm.expect(r.publishedBy).to.be.a('string');",
+                  "  pm.expect(r.publishedAt).to.not.be.null;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 VALIDATION_ERROR — draft with no source documents",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"\",\n  \"templateId\": \"{{templateId}}\",\n  \"subsidiaryId\": \"{{subsidiaryId}}\",\n  \"sourceDocumentIds\": []\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/reports",
+            "description": "PRD §4.2, §9.2. An empty title and an empty source list are both SHAPE failures. `sourceDocumentIds` has a floor of 1 by design: a report with no cited source has nothing to trace back to (§5.8)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "const e = pm.response.json().error;",
+                  "pm.test('VALIDATION_ERROR names both fields', () => {",
+                  "  pm.expect(e.code).to.eql('VALIDATION_ERROR');",
+                  "  pm.expect(Object.keys(e.fields)).to.include.members(['title', 'sourceDocumentIds']);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 INVALID_REQUEST — edit a published report",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Quietly restated after publication\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/reports/{{reportId}}",
+            "description": "PRD §4.2, §9.8. Run this AFTER the publish request above. The body is perfectly well-formed — the request is refused because of the report's STATE, which is what `INVALID_REQUEST` means as opposed to `VALIDATION_ERROR`.\n\nThis is the rule that keeps a published figure from being restated in place with no version trail."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('INVALID_REQUEST, not VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_REQUEST'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 CONFIRM_TEXT_MISMATCH — archive without typing the title",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"confirm\": \"yes\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/reports/{{reportId}}/archive",
+            "description": "PRD §8.3, §9.8. Archiving is irreversible in effect, so it takes TYPED confirmation: `confirm` must equal the report's exact title, not a generic \"yes\". A dedicated `CONFIRM_TEXT_MISMATCH` code (not a plain validation error) lets the frontend tell the user precisely what to retype.\n\nMust run BEFORE the archive happy path below: once archived, the already-archived check fires first and returns `INVALID_REQUEST` instead."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('CONFIRM_TEXT_MISMATCH (§8.3)', () => pm.expect(pm.response.json().error.code).to.eql('CONFIRM_TEXT_MISMATCH'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "401 — missing token",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/reports",
+            "description": "PRD §9.1. Both routers mount `requireAuth` before any route, so neither reports nor templates have an unauthenticated surface."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('UNAUTHORIZED', () => pm.expect(pm.response.json().error.code).to.eql('UNAUTHORIZED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "401 — expired or revoked token",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{expiredAccessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/reports",
+            "description": "PRD §9.3. See the Documents folder for how to populate `expiredAccessToken`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('TOKEN_EXPIRED or TOKEN_INVALID', () => pm.expect(['TOKEN_EXPIRED', 'TOKEN_INVALID']).to.include(pm.response.json().error.code));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "403 — MoC official cannot draft a report",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mocAccessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Draft attempted by a read-only reviewer\",\n  \"templateId\": \"{{templateId}}\",\n  \"subsidiaryId\": \"{{subsidiaryId}}\",\n  \"sourceDocumentIds\": [\"{{documentId}}\"]\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/reports",
+            "description": "PRD §2, §9.1. Drafting is a write; MoC officials are read-only across subsidiaries. 403 because the route is legitimately visible to them — only the action is denied."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 403', () => pm.response.to.have.status(403));",
+                  "pm.test('FORBIDDEN', () => pm.expect(pm.response.json().error.code).to.eql('FORBIDDEN'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "403 — CIL user may draft but may not publish",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cilAccessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/reports/{{reportId}}/publish",
+            "description": "PRD §11.5 — the separation of duties, seen from the other side. `cilAccessToken` belongs to a `cil_user` who HOLDS `{{subsidiaryId}}`, so the report is fully visible to them and they may edit it; publishing is still refused.\n\nThat is exactly why this is 403 and not 404: the resource is legitimately theirs to see, and only the ACTION is out of reach."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 403', () => pm.response.to.have.status(403));",
+                  "pm.test('FORBIDDEN — the row is visible, the action is not', () => pm.expect(pm.response.json().error.code).to.eql('FORBIDDEN'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "404 — unknown id (no such report)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/reports/{{unknownId}}",
+            "description": "PRD §9.1. A well-formed ObjectId that exists nowhere. Compare with the next request."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "404 — out-of-scope id (exists, other subsidiary)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{outOfScopeAccessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/reports/{{reportId}}",
+            "description": "PRD §9.1. A REAL report in `{{subsidiaryId}}`, read by a non-admin granted only `{{otherSubsidiaryId}}`. Same 404 as the unknown-id request above — the caller is never told the report exists somewhere else.\n\nContrast this with the CIL-user publish request higher up: same 4xx family, opposite code, because there the resource was in scope and only the action was denied."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('NOT_FOUND, never FORBIDDEN', () => pm.expect(pm.response.json().error.code).to.eql('NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "404 — source document unknown or out of scope",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Draft citing a document that is not ours\",\n  \"templateId\": \"{{templateId}}\",\n  \"subsidiaryId\": \"{{subsidiaryId}}\",\n  \"sourceDocumentIds\": [\"{{unknownId}}\"]\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/reports",
+            "description": "PRD §9.1, §8.3. Client-supplied document ids are resolved through a SCOPED query, so an unchecked id never reaches a Mongo filter. A source document that does not exist and one that lives in another subsidiary produce the same 404 — the response cannot be used to probe for documents outside the caller's grants."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "409 CONFLICT — duplicate template name",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Quarterly Production Compliance\",\n  \"sections\": [{ \"heading\": \"Production Summary\", \"body\": \"\" }],\n  \"subsidiaryScope\": []\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/report-templates",
+            "description": "PRD §9.8. Re-sends the exact name created earlier in this folder. Template names are unique among non-deleted templates, so two returns can never be filed under indistinguishable shapes."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('CONFLICT', () => pm.expect(pm.response.json().error.code).to.eql('CONFLICT'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /reports/:id/archive (admin, typed confirmation) — run last",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"confirm\": \"{{reportTitle}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/reports/{{reportId}}/archive",
+            "description": "PRD §8.3, §9.6. Admin only, and `confirm` must equal the report's exact title — captured as `reportTitle` by the create request above.\n\nDeliberately the last request in this folder: archiving is terminal, and once it succeeds the `CONFIRM_TEXT_MISMATCH` case above becomes unobservable (the already-archived check returns `INVALID_REQUEST` first). Re-running this request against the same report returns 400 `INVALID_REQUEST` for that reason."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const r = pm.response.json().data;",
+                  "pm.test('Now archived', () => pm.expect(r.status).to.eql('archived'));",
+                  "pm.test('Archival is dated (§9.6)', () => pm.expect(r.archivedAt).to.not.be.null);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. Dashboard",
+      "description": "The §5.3 leadership snapshot — PRD §4.6, §5.3, §10.2.\n\nTwo GETs, no parameters, no role gate: every role may see a dashboard, and what differs is WHAT IS IN IT. Scoping is implicit and total — the cache key is derived from the caller's GRANT LIST (never from their user id), so a user can never read an aggregate computed over subsidiaries they cannot access, and a user whose grants change gets a different key rather than a stale over-broad answer.\n\nBecause there is no path parameter and no role gate, the §9.9 modes that apply here are 401 only: there is no id to be unknown or out of scope, and no action to be forbidden. The third request below shows the scoping that stands in for a 404.\n\nEvery figure travels with `computedAt` and `cached` (§4.6): a stale number presented as live is a traceability defect, so freshness is part of the payload rather than something the client has to guess.",
+      "item": [
+        {
+          "name": "GET /dashboard (summary)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/dashboard",
+            "description": "PRD §5.3. Four blocks in one round trip: `quickStats` (the three §1.5 headline percentages plus `computedAt`/`cached`), `documents` counts, `recentReports`, and `pendingWork`.\n\n`pendingWork` unions two halves authorized by DIFFERENT rules and that is deliberate: documents are filtered by the caller's grants on a top-level `subsidiaryId`, while queries use the containment clause imported from the queries module — a query answered over {A, B} is hidden from a user who holds only A, because its prose may carry B's figures."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json().data;",
+                  "pm.test('All four §5.3 blocks are present', () => {",
+                  "  pm.expect(d).to.include.all.keys('quickStats', 'documents', 'recentReports', 'pendingWork');",
+                  "});",
+                  "pm.test('Freshness travels with the figures (§4.6)', () => {",
+                  "  pm.expect(d.quickStats.computedAt).to.be.a('string');",
+                  "  pm.expect(d.quickStats.cached).to.be.a('boolean');",
+                  "});",
+                  "pm.test('Headline percentages are numbers, never nulls here', () => {",
+                  "  pm.expect(d.quickStats.extractionAccuracyPercent).to.be.a('number');",
+                  "  pm.expect(d.quickStats.automationCoveragePercent).to.be.a('number');",
+                  "  pm.expect(d.quickStats.timeSavedPercent).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /dashboard/metrics (poll without the rest)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/dashboard/metrics",
+            "description": "PRD §4.6, §5.3. The quick-stat numbers on their own, for polling a card without refetching recent reports and the pending-work queue.\n\nRun it twice: the first call recomputes and returns `cached: false`, the second is served from `MetricsCache` within `METRICS_CACHE_TTL_SECONDS` and returns `cached: true` with the SAME `computedAt`. The cache key folds in the payload version and the assumption fingerprint, so retuning a metric constant can never serve figures computed under the old assumptions for a full TTL."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const m = pm.response.json().data;",
+                  "pm.test('Carries its own freshness (§4.6)', () => {",
+                  "  pm.expect(m).to.have.property('computedAt');",
+                  "  pm.expect(m.cached).to.be.a('boolean');",
+                  "});",
+                  "pm.test('Document counts accompany the percentages', () => {",
+                  "  pm.expect(m.documentsTotal).to.be.a('number');",
+                  "  pm.expect(m.documentsValidated).to.be.a('number');",
+                  "  pm.expect(m.queriesPendingReview).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /dashboard as a scoped user (implicit isolation)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{outOfScopeAccessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/dashboard",
+            "description": "PRD §9.1, §4.6 — what stands in for a 404 on a route with no id.\n\nThe same URL, a different caller. `outOfScopeAccessToken` holds only `{{otherSubsidiaryId}}`, so this 200 covers a strictly smaller corpus than the admin's. Compare `documents.total` with the first request's: the difference IS the isolation. Nothing in the response names a subsidiary the caller cannot access, and the cached row backing it was keyed on this caller's grants, so it can never be the admin's aggregate served back."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200 — every role gets a dashboard', () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json().data;",
+                  "pm.test('Scoped totals, not the global ones', () => pm.expect(d.documents.total).to.be.a('number'));",
+                  "pm.test('Recent reports stay inside the caller grants', () => pm.expect(d.recentReports).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "401 — missing token",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/dashboard",
+            "description": "PRD §9.1. `dashboardRouter.use(requireAuth)` covers both routes. There is no anonymous view of the leadership figures."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('UNAUTHORIZED', () => pm.expect(pm.response.json().error.code).to.eql('UNAUTHORIZED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "401 — expired or revoked token",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{expiredAccessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/dashboard/metrics",
+            "description": "PRD §9.3. `requireAuth` re-checks live state the token cannot know about — whether the user is still active and whether the session behind the token was revoked — so a force-logout takes effect immediately rather than at token expiry."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('TOKEN_EXPIRED or TOKEN_INVALID', () => pm.expect(['TOKEN_EXPIRED', 'TOKEN_INVALID']).to.include(pm.response.json().error.code));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "7. Queries",
+      "description": "The parliamentary query log — PRD §4.4, §5.7, §8.1, §9.5, §9.6, §10.2, §10.3.\n\n### READ THIS BEFORE RUNNING THE FOLDER TOP TO BOTTOM\n\n`POST /queries` is **asynchronous**. It returns **201 with `status: \"queued\"` and `responseText: null`** — no answer is produced inside the request. The answer arrives later, from the worker, and you collect it by **polling `GET /queries/:id`** until `status` reaches a terminal value (`answered`, `unsupported`, `failed` or `dead_lettered`).\n\nIf you run this folder in one pass and stop at the 201, **the answer is not missing — it has not been generated yet.** Re-send `GET /queries/:id` a few times.\n\n### Why it is built this way\n\nRetrieval plus generation is unbounded work; doing it in the request would hold an HTTP connection open for as long as the model takes and make the endpoint a denial-of-service lever with a valid token. The queued row is also what makes the pipeline observable: `status`, `attempts` and `failureReason` are all readable while it runs, and `GET /analytics` reports `queriesQueued` / `queriesInFlight` / `queriesDeadLettered`.\n\n### Two rules worth watching\n\n- **Containment, not intersection (§9.1).** A query answered over {A, B} may carry B's figures in its prose, so a user granted only A must not read it — even though the query \"touches\" a subsidiary they hold. That is why the happy path below pins `subsidiaryId` explicitly.\n- **Citations are never client-authored (§9.5).** The review schema has no `citations` field at all; a citation can only ever be derived from the chunks actually retrieved. The \"citations in the body are ignored\" request proves it.\n\n`POST /queries` and `POST /queries/:id/retry` sit behind `aiLimiter` (12/min, keyed on the USER), stricter than the global limit as §9.2 requires.",
+      "item": [
+        {
+          "name": "POST /queries (201 QUEUED — the answer comes later)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"questionText\": \"What was raw coal production for the last quarter, and how does it compare with the target?\",\n  \"isParliamentary\": true,\n  \"subsidiaryId\": \"{{subsidiaryId}}\",\n  \"documentIds\": []\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/queries",
+            "description": "PRD §4.4, §5.7, §9.2, §10.3. All three roles may ask — §2 gives the MoC Official the query interface explicitly, and asking writes only the caller's own question, never subsidiary data.\n\n**201 with the row still `queued`. `responseText` is `null` and `citations` is `[]` at this point — that is correct, not a bug.** Poll `GET /queries/:id` (next request) for the answer.\n\nFields:\n- `questionText` — 10..2000 chars, sized so a maximal body stays well inside the global 10kb JSON limit, which the body parser enforces BEFORE validation runs.\n- `isParliamentary` — the answer STYLE is derived from this flag in the worker, so there is no separate `style` field the two could disagree about.\n- `subsidiaryId` — optional; omitted means every subsidiary the caller holds (all of them, for an admin). **Pinned here deliberately**: it makes `contextScope.subsidiaryIds` a single id, which is what lets the 403 and 404 requests further down demonstrate containment cleanly.\n- `documentIds` — optional, max 25. Narrows retrieval to named, in-scope, VALIDATED documents. Out of scope is 404; in scope but unvalidated is 400 `INVALID_REQUEST`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const q = pm.response.json().data;",
+                  "pm.test('Queued, not answered — the worker has not run yet', () => {",
+                  "  pm.expect(q.status).to.eql('queued');",
+                  "  pm.expect(q.responseText).to.be.null;",
+                  "});",
+                  "pm.test('Context scope is resolved at ask time (§9.1)', () => {",
+                  "  pm.expect(q.contextScope.subsidiaryIds).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.environment.set('queryId', q.id);",
+                  "console.log('Queued query ' + q.id + ' — now poll GET /queries/:id until status is answered/unsupported/failed.');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /queries/:id (POLL THIS until status is terminal)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/queries/{{queryId}}",
+            "description": "PRD §4.4, §8.1, §9.5 — **this is where the answer appears.** Send it repeatedly; `status` walks `queued` → `retrieving` → `answering` → `answered` | `unsupported` | `failed` (→ `dead_lettered` once retries are exhausted).\n\nWhat comes back once it is terminal:\n- `responseText` — the generated prose.\n- `citations` — STRUCTURED metadata (`documentId`, `pageNumber`, `chunkIndex`, `section`, `quote`, `relevance`). The client links these into the §5.8 traceability routes and NEVER parses `responseText` to find a source (§8.1).\n- `retrieval` — `candidatesConsidered`, `passagesUsed`, `passagesWithheld`, `discardedCitations`. The counts make the answer auditable.\n- `warnings` — human-readable LOSS. A passage withheld because it contained suspected embedded instructions is visible loss, never silent loss (§9.5); so is a proposed citation discarded for not matching the sources actually retrieved.\n- `answerStatus: \"unsupported\"` — an honest \"no authorised source in scope supports an answer\", which is a correct outcome rather than a failure.\n\n`retrievedChunkIds` and `injectionFlags` are internal and surface only as COUNTS: publishing which rules fired tells an attacker which patterns to avoid."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const q = pm.response.json().data;",
+                  "console.log('query status = ' + q.status + (q.answerStatus ? ' / ' + q.answerStatus : ''));",
+                  "pm.test('Status is a known pipeline state', () => pm.expect(['queued', 'retrieving', 'answering', 'answered', 'unsupported', 'failed', 'dead_lettered']).to.include(q.status));",
+                  "pm.test('Citations are structured metadata, not prose (§8.1)', () => pm.expect(q.citations).to.be.an('array'));",
+                  "pm.test('Retrieval is countable and auditable (§9.5)', () => {",
+                  "  pm.expect(q.retrieval).to.include.all.keys('candidatesConsidered', 'passagesUsed', 'passagesWithheld', 'discardedCitations');",
+                  "});",
+                  "pm.test('Withheld passages are visible loss, not silent loss (§9.5)', () => pm.expect(q.warnings).to.be.an('array'));",
+                  "pm.test('Internal retrieval state never ships', () => {",
+                  "  pm.expect(pm.response.text()).to.not.include('retrievedChunkIds');",
+                  "  pm.expect(pm.response.text()).to.not.include('injectionRuleIds');",
+                  "});",
+                  "if (['queued', 'retrieving', 'answering'].includes(q.status)) {",
+                  "  console.log('Still in flight — send this request again in a moment.');",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /queries (cursor-paginated log, filtered)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/queries?limit=25&isParliamentary=true&subsidiaryId={{subsidiaryId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "queries"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "25",
+                  "description": "1..100, default 25."
+                },
+                {
+                  "key": "cursor",
+                  "value": "",
+                  "description": "The `pagination.nextCursor` from the previous page.",
+                  "disabled": true
+                },
+                {
+                  "key": "isParliamentary",
+                  "value": "true",
+                  "description": "String enum 'true'/'false'."
+                },
+                {
+                  "key": "subsidiaryId",
+                  "value": "{{subsidiaryId}}",
+                  "description": "Narrows to queries whose context scope includes this subsidiary. 404 for a grant you do not hold."
+                },
+                {
+                  "key": "status",
+                  "value": "answered",
+                  "description": "queued | retrieving | answering | answered | unsupported | failed | dead_lettered",
+                  "disabled": true
+                },
+                {
+                  "key": "reviewStatus",
+                  "value": "pending",
+                  "description": "not_required | pending | approved | rejected",
+                  "disabled": true
+                },
+                {
+                  "key": "mine",
+                  "value": "true",
+                  "description": "'true' restricts the log to the caller's own questions.",
+                  "disabled": true
+                },
+                {
+                  "key": "askedBy",
+                  "value": "{{userId}}",
+                  "description": "Filter by author id.",
+                  "disabled": true
+                },
+                {
+                  "key": "q",
+                  "value": "production",
+                  "description": "Text search over questionText + responseText, run INSIDE the scoped query (§8.2) — never across the whole collection.",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "PRD §5.7, §9.8. The log table: a preview and a citation COUNT per row, not the whole answer.\n\nCursor, not offset — the log takes continuous inserts, so offset paging would skip and duplicate rows under a reviewer. Rows stay sorted by `_id` descending EVEN WHEN `?q=` supplies a text search: score ordering and cursor stability are incompatible, and for an auditable log a silently skipped row is a defect while a suboptimal result order is an annoyance."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('Cursor envelope (§9.8)', () => {",
+                  "  pm.expect(body.data).to.be.an('array');",
+                  "  pm.expect(body.pagination).to.have.property('nextCursor');",
+                  "});",
+                  "pm.test('Summary rows carry a preview and a count, not the full answer (§5.7)', () => {",
+                  "  if (body.data.length) pm.expect(body.data[0]).to.include.all.keys('answerPreview', 'citationCount');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "PATCH /queries/:id (review — annotate an answered query)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"officialResponseText\": \"Raw coal production for Q2 FY2026 was 12.5 lakh tonnes against a target of 12.0 lakh tonnes, an achievement of 104%.\",\n  \"reviewStatus\": \"approved\",\n  \"reviewNote\": \"Figures cross-checked against the Q2 production return, page 4.\",\n  \"linkedReportId\": \"{{reportId}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/queries/{{queryId}}",
+            "description": "PRD §4.4, §9.5, §9.6, §11.5. **Run this only once the query has reached `answered` or `unsupported`** — reviewing anything still in flight is 400 `INVALID_REQUEST` (its own request below).\n\nRole gate is `admin` + `cil_user`; APPROVAL is admin-only and is checked in the service because it depends on the body. Same separation of duties as `POST /reports/:id/publish`.\n\n`officialResponseText` is capped at 2000 chars and `reviewNote` at 500 so a maximal body fits the global 10kb JSON limit. A longer official response belongs in a Report, which carries version history and a publish gate.\n\n**There is no `citations` field in this schema, by construction (§9.5).** A human may write the official response; a human may never hand-author a citation. `linkedReportId` is resolved through a scoped read and may be `null` to unlink."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const q = pm.response.json().data;",
+                  "pm.test('Review is attributed (§9.6)', () => {",
+                  "  pm.expect(q.reviewStatus).to.eql('approved');",
+                  "  pm.expect(q.reviewedBy).to.be.a('string');",
+                  "  pm.expect(q.reviewedAt).to.not.be.null;",
+                  "});",
+                  "pm.test('The official response sits beside the generated one, not on top of it', () => {",
+                  "  pm.expect(q.officialResponseText).to.be.a('string');",
+                  "  pm.expect(q).to.have.property('responseText');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /queries/:id/retry (failed queries only)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/queries/{{queryId}}/retry",
+            "description": "PRD §9.7, §10.3. An EXPLICIT, authorized, rate-limitable endpoint rather than a hidden internal loop, so a stuck job stays observable.\n\n200, not 201: an action-style POST that creates nothing. Author-or-admin — a CIL user who can see someone else's query still cannot retry it, and that is 403 (the row is legitimately visible; only the action is denied).\n\nOnly `failed` queries qualify, and only while `attempts` remain below `maxAttempts`; past the ceiling the query is dead-lettered and needs manual review. Behind `aiLimiter` (12/min per user)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Back in the pipeline', () => pm.expect(['queued', 'retrieving', 'answering']).to.include(pm.response.json().data.status));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /queries — a client-supplied `citations` array is IGNORED (§9.5)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"questionText\": \"Summarise the safety record for the period, citing the sources you actually used.\",\n  \"subsidiaryId\": \"{{subsidiaryId}}\",\n  \"citations\": [\n    { \"documentId\": \"{{unknownId}}\", \"quote\": \"A citation the client invented.\", \"pageNumber\": 1 }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/queries",
+            "description": "PRD §9.5 — not a failure case, a GUARANTEE.\n\nThe create schema has no `citations` key, so Zod STRIPS the array before any service sees it: this returns 201 like any other ask, and the created query's `citations` is `[]`. A citation can only ever be derived from the chunks actually retrieved, which is why forging one is impossible rather than merely forbidden.\n\nNote the shape of the protection — the field is absent from the schema, so there is no check that could be forgotten. Same idea one level up: the queries module imports no report, user, session or storage MUTATION at all, and eslint turns a violation into a build failure, so \"model output must never trigger a privileged action\" is an absence of machinery rather than a rule someone has to remember."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 201 — the unknown key is stripped, not rejected', () => pm.response.to.have.status(201));",
+                  "const q = pm.response.json().data;",
+                  "pm.test('No client-authored citation survived (§9.5)', () => pm.expect(q.citations).to.be.an('array').that.is.empty);",
+                  "pm.test('The forged document id is nowhere in the response', () => pm.expect(JSON.stringify(q.citations)).to.not.include(pm.variables.get('unknownId')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 VALIDATION_ERROR — question below the length floor",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"questionText\": \"coal?\",\n  \"subsidiaryId\": \"not-an-object-id\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/queries",
+            "description": "PRD §9.2. Two shape failures at once: `questionText` is under the 10-character floor, and `subsidiaryId` is not an ObjectId. Every id is checked for SHAPE here; whether the caller may REACH the resource behind it is a separate, scoped query in the service."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "const e = pm.response.json().error;",
+                  "pm.test('VALIDATION_ERROR names both fields', () => {",
+                  "  pm.expect(e.code).to.eql('VALIDATION_ERROR');",
+                  "  pm.expect(Object.keys(e.fields)).to.include.members(['questionText', 'subsidiaryId']);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 VALIDATION_ERROR — review with an empty body",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": "{{baseUrl}}/api/v1/queries/{{queryId}}",
+            "description": "PRD §9.2. Every review field is optional, so a schema refinement enforces that at least one is supplied — otherwise an empty PATCH would record a review event that changed nothing, which is noise in an audit trail (§9.6)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 INVALID_REQUEST — review a query that is still in flight",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reviewStatus\": \"approved\",\n  \"reviewNote\": \"Approving an answer that does not exist yet.\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/queries/{{queryId}}",
+            "description": "PRD §9.8. Send this immediately after `POST /queries`, while `status` is still `queued`.\n\nThe body is perfectly well-formed; the request is refused because of the query's STATE. That is the `INVALID_REQUEST` / `VALIDATION_ERROR` split — and the rule keeps anyone from approving an answer before there is an answer to approve. Only `answered` and `unsupported` queries can carry a review status."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('INVALID_REQUEST, not VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_REQUEST'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 INVALID_REQUEST — retry a query that did not fail",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/queries/{{queryId}}/retry",
+            "description": "PRD §9.8. Run this while the query is queued or answered. Retry exists to recover a FAILED job, not to re-roll an answer somebody dislikes — re-asking is a new query, with its own audit row."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('INVALID_REQUEST', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_REQUEST'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "401 — missing token",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/queries",
+            "description": "PRD §9.1. `queryRouter.use(requireAuth)` covers the whole family. `aiLimiter` is keyed on the USER precisely because every route here sits behind authentication."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('UNAUTHORIZED', () => pm.expect(pm.response.json().error.code).to.eql('UNAUTHORIZED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "401 — expired or revoked token",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{expiredAccessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/queries/{{queryId}}",
+            "description": "PRD §9.3. See the Documents folder for how to populate `expiredAccessToken`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('TOKEN_EXPIRED or TOKEN_INVALID', () => pm.expect(['TOKEN_EXPIRED', 'TOKEN_INVALID']).to.include(pm.response.json().error.code));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "403 — MoC official may ask but may not review",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mocAccessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reviewNote\": \"Annotation attempted by a read-only reviewer.\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/queries/{{queryId}}",
+            "description": "PRD §2, §9.1. The MoC Official gets the query interface explicitly — `POST /queries` and `POST /queries/:id/retry` accept all three roles — but reviewing writes to the shared log, so the gate is `admin` + `cil_user`. 403 from `roleGuard`, before the service runs."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 403', () => pm.response.to.have.status(403));",
+                  "pm.test('FORBIDDEN', () => pm.expect(pm.response.json().error.code).to.eql('FORBIDDEN'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "403 — only an admin can APPROVE (service-level, not roleGuard)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cilAccessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reviewStatus\": \"approved\",\n  \"reviewNote\": \"Approval attempted by the person who drafted the answer.\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/queries/{{queryId}}",
+            "description": "PRD §9.1, §11.5 — the second, finer gate.\n\n`cilAccessToken` belongs to a `cil_user` who HOLDS `{{subsidiaryId}}`, so `roleGuard('admin','cil_user')` lets them through and the containment clause finds the row. They may annotate it — the previous happy-path fields are open to them. What they may not do is APPROVE, and that check lives in the service because it depends on the BODY, not on the route.\n\n403, not 404: the query is legitimately visible to this caller; only the action is denied. Same separation of duties as `POST /reports/:id/publish` — the person drafting a figure is not the person putting it on record."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 403', () => pm.response.to.have.status(403));",
+                  "pm.test('FORBIDDEN — visible row, denied action', () => pm.expect(pm.response.json().error.code).to.eql('FORBIDDEN'));",
+                  "pm.test('Not 404 — this caller can legitimately see the query', () => pm.expect(pm.response.code).to.not.eql(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "404 — unknown id (no such query)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/queries/{{unknownId}}",
+            "description": "PRD §9.1. A well-formed ObjectId that exists nowhere. Compare with the next request."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "404 — out-of-scope id (exists, other subsidiary)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{outOfScopeAccessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/queries/{{queryId}}",
+            "description": "PRD §9.1, §9.5 — CONTAINMENT, and why it is stricter than it looks.\n\nThe query's `contextScope.subsidiaryIds` is `[{{subsidiaryId}}]`. `outOfScopeAccessToken` holds only `{{otherSubsidiaryId}}`, so the scope clause matches nothing and the answer is 404 — identical to the unknown-id response above.\n\nThe rule is CONTAINMENT, not intersection: a query answered over {A, B} is hidden even from a user who holds A, because the prose and citations may carry B's figures. Simple `$in` matching would leak it; requiring the whole context scope to sit inside the caller's grants does not.\n\nContrast with the approval request higher up: there the caller CAN see the row, so the denial is 403. Here they cannot, so existence itself is never disclosed."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('NOT_FOUND, never FORBIDDEN', () => pm.expect(pm.response.json().error.code).to.eql('NOT_FOUND'));",
+                  "pm.test('Nothing about the answer leaks', () => pm.expect(pm.response.text()).to.not.include('responseText'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "404 — ask against a document that is unknown or out of scope",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"questionText\": \"What does this document say about production shortfalls in the period?\",\n  \"subsidiaryId\": \"{{subsidiaryId}}\",\n  \"documentIds\": [\"{{unknownId}}\"]\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/queries",
+            "description": "PRD §8.3, §9.1. Client-supplied `documentIds` are resolved through a SCOPED query, so an unchecked client id never reaches a Mongo filter.\n\nA document that does not exist and one that lives in another subsidiary return the same 404, so this endpoint cannot be used to probe for documents outside the caller's grants. (A document that IS in scope but is not `validated` is a different answer: 400 `INVALID_REQUEST`, because the caller may legitimately know it exists.)"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "429 — AI rate limit (send 13+ asks within a minute)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"questionText\": \"Repeat this request until the AI limiter refuses it.\",\n  \"subsidiaryId\": \"{{subsidiaryId}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/queries",
+            "description": "PRD §9.2. `aiLimiter` allows 12 requests/minute and is keyed on the USER, not the IP — every route here sits behind `requireAuth`, so a shared office egress address cannot be exhausted by one caller, and one caller cannot escape the limit by changing address.\n\nSend this repeatedly until it flips to 429 `RATE_LIMIT_EXCEEDED`. The same limiter guards `POST /queries/:id/retry`, so retries and asks share the budget.\n\nNOTE: the limiter inherits `skip: () => env.isTest`, so it is DISABLED under the automated test suite; the 429 path is covered by a configuration unit test rather than an integration test. This request is the manual check that the wiring is live in a running server."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 429) {",
+                  "  pm.test('RATE_LIMIT_EXCEEDED', () => pm.expect(pm.response.json().error.code).to.eql('RATE_LIMIT_EXCEEDED'));",
+                  "} else {",
+                  "  pm.test('Still under the limit — send again (expect 201 until the 13th within a minute)', () => pm.expect(pm.response.code).to.eql(201));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "8. Topics",
+      "description": "Word cloud, clustering and term trend — PRD §4.3, §5.6, §9.2, §10.2.\n\nONE route: `GET /api/v1/topics`. All three roles may read it (§2 gives MoC officials analytics), so there is no `roleGuard` — a guard listing every role is a guard that only ever goes stale. That means **403 is not an applicable failure mode here**; the isolation is enforced instead by folding the caller's grants into every pipeline AND into the cache key.\n\nDates are IST **CALENDAR** dates (`YYYY-MM-DD`), never instants. The client never sends a timestamp, so the client can never disagree with the server about where an Indian fiscal quarter begins; the service converts each date into the half-open UTC window the pipelines actually match on and returns BOTH forms (`from`/`to` and `fromUtc`/`toUtc`) so a figure is reproducible.\n\nThe two 400s are different animals and both are represented below: a malformed date is a SHAPE failure (`VALIDATION_ERROR`), while a range that ends before it starts is schema-valid and logically invalid (`INVALID_REQUEST`) — §9.8's own worked example.\n\nEvery bound (`limit`, `minSources`, the range ceiling) is a COST bound as well as a correctness one: a cold-cache request here is the heaviest read in the system, which is why the route sits behind `analyticsLimiter` rather than the global limit.",
+      "item": [
+        {
+          "name": "GET /topics (defaults — quarter over quarter)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/topics",
+            "description": "PRD §4.3, §5.6. With no parameters at all: `granularity=quarter` (§4.3's named use case is quarter over quarter), `source=all`, `limit=50`, `minSources=2`, `compare=previous`, `cluster=true`, over the CURRENT INDIAN FISCAL YEAR TO DATE.\n\nThe response carries `scope` (which subsidiaries these terms came from), `range` (both the IST calendar dates and the UTC window), `wordCloud` (with a 0..1 `weight` normalised against the top term, so the client sizes the cloud directly), `clusters`, `trend` (per-term series across the enumerated buckets) and `comparison`.\n\nNot paginated: the result is bounded by `limit`, the cluster caps and the bucket count, so a cursor would be ceremony around a fixed-size object.\n\nIf the cloud is empty on a Phase 1 database, that is honest rather than broken — historic documents have no `wordFrequencies` rows until `npm run backfill:terms` has been run once."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json().data;",
+                  "pm.test('All §5.6 blocks present', () => pm.expect(d).to.include.all.keys('scope', 'range', 'wordCloud', 'clusters', 'trend', 'comparison'));",
+                  "pm.test('Defaults applied', () => {",
+                  "  pm.expect(d.range.granularity).to.eql('quarter');",
+                  "  pm.expect(d.range.buckets).to.be.an('array');",
+                  "});",
+                  "pm.test('Both date forms travel, so figures are reproducible', () => {",
+                  "  pm.expect(d.range.from).to.match(/^\\d{4}-\\d{2}-\\d{2}$/);",
+                  "  pm.expect(d.range.fromUtc).to.be.a('string');",
+                  "  pm.expect(d.range.timezone).to.be.a('string');",
+                  "});",
+                  "pm.test('Freshness travels with the numbers (§4.6)', () => {",
+                  "  pm.expect(d).to.have.property('computedAt');",
+                  "  pm.expect(d.cached).to.be.a('boolean');",
+                  "});",
+                  "pm.test('Cloud weights are normalised 0..1', () => {",
+                  "  d.wordCloud.forEach((w) => pm.expect(w.weight).to.be.within(0, 1));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /topics (explicit window, monthly, documents only, no clustering)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/topics?from=2026-04-01&to=2026-09-30&granularity=month&source=document&limit=100&minSources=3&compare=none&cluster=false&subsidiaryId={{subsidiaryId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "topics"
+              ],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "2026-04-01",
+                  "description": "IST calendar date. Inclusive. Omit either bound and the fiscal-year-to-date default fills that edge only — `?from=` alone means \"from then until the end of the default window\"."
+                },
+                {
+                  "key": "to",
+                  "value": "2026-09-30",
+                  "description": "IST calendar date. Inclusive as a WHOLE DAY; internally it becomes the exclusive end of a half-open UTC window."
+                },
+                {
+                  "key": "granularity",
+                  "value": "month",
+                  "description": "month | quarter. Quarters are INDIAN FISCAL quarters — the response echoes `fiscalYearStartMonth` so the client need not assume."
+                },
+                {
+                  "key": "source",
+                  "value": "document",
+                  "description": "document | query | all. Terms indexed from uploaded documents, from asked questions, or both."
+                },
+                {
+                  "key": "limit",
+                  "value": "100",
+                  "description": "5..200, default 50. A cost bound: it decides how much of the term table the aggregation touches."
+                },
+                {
+                  "key": "minSources",
+                  "value": "3",
+                  "description": "1..50, default 2. A term appearing in fewer than this many distinct sources is noise, not a topic."
+                },
+                {
+                  "key": "compare",
+                  "value": "none",
+                  "description": "previous | none. `previous` adds the emerging/fading comparison against the preceding period."
+                },
+                {
+                  "key": "cluster",
+                  "value": "false",
+                  "description": "true | false. String enum, not a coerced boolean."
+                },
+                {
+                  "key": "subsidiaryId",
+                  "value": "{{subsidiaryId}}",
+                  "description": "Optional narrowing. Checked against the caller's grants FIRST, so a client id never reaches a pipeline unchecked (§8.3)."
+                }
+              ]
+            },
+            "description": "PRD §4.3, §5.6, §9.2. Every parameter set explicitly. Note that `compare=none` returns `comparison: null` — a deliberate null meaning \"not requested\", which is a different statement from an empty comparison."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json().data;",
+                  "pm.test('Window echoed back exactly as sent', () => {",
+                  "  pm.expect(d.range.from).to.eql('2026-04-01');",
+                  "  pm.expect(d.range.to).to.eql('2026-09-30');",
+                  "  pm.expect(d.range.granularity).to.eql('month');",
+                  "});",
+                  "pm.test('compare=none means comparison is an explicit null', () => pm.expect(d.comparison).to.be.null);",
+                  "pm.test('cluster=false means no clusters were computed', () => pm.expect(d.clusters).to.be.an('array').that.is.empty);",
+                  "pm.test('Scope is pinned to the requested subsidiary', () => pm.expect(d.scope.subsidiaryIds).to.include(pm.environment.get('subsidiaryId')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /topics (quarter-over-quarter comparison)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/topics?granularity=quarter&compare=previous&limit=25",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "topics"
+              ],
+              "query": [
+                {
+                  "key": "granularity",
+                  "value": "quarter"
+                },
+                {
+                  "key": "compare",
+                  "value": "previous"
+                },
+                {
+                  "key": "limit",
+                  "value": "25"
+                }
+              ]
+            },
+            "description": "PRD §4.3 — the named use case. `comparison` names the two periods, then per term gives `current`, `previous`, `change`, `changePercent` and a `direction`, plus `emerging` and `fading` term lists.\n\n`changePercent` is `null` — never `Infinity`, never a fabricated 100 — when the previous bucket was zero. A term appearing for the first time has no percentage change, and reporting one would be an invented figure in a system whose output feeds parliamentary answers."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const c = pm.response.json().data.comparison;",
+                  "if (c) {",
+                  "  pm.test('Both periods are named', () => {",
+                  "    pm.expect(c.currentPeriod).to.be.a('string');",
+                  "    pm.expect(c.previousPeriod).to.be.a('string');",
+                  "  });",
+                  "  pm.test('Emerging and fading are lists', () => {",
+                  "    pm.expect(c.emerging).to.be.an('array');",
+                  "    pm.expect(c.fading).to.be.an('array');",
+                  "  });",
+                  "  pm.test('No fabricated percentage against a zero baseline', () => {",
+                  "    c.terms.forEach((t) => {",
+                  "      if (t.previous === 0) pm.expect(t.changePercent).to.be.null;",
+                  "      if (t.changePercent !== null) pm.expect(Number.isFinite(t.changePercent)).to.be.true;",
+                  "    });",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 VALIDATION_ERROR — malformed date, unknown granularity, limit over cap",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/topics?from=2026-4-1&granularity=decade&limit=500&cluster=yes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "topics"
+              ],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "2026-4-1",
+                  "description": "Not zero-padded — the pattern demands YYYY-MM-DD exactly."
+                },
+                {
+                  "key": "granularity",
+                  "value": "decade",
+                  "description": "Only month | quarter exist."
+                },
+                {
+                  "key": "limit",
+                  "value": "500",
+                  "description": "The cap is 200."
+                },
+                {
+                  "key": "cluster",
+                  "value": "yes",
+                  "description": "The enum is the literal strings 'true'/'false'."
+                }
+              ]
+            },
+            "description": "PRD §9.2, §9.8. All four are SHAPE failures, caught by Zod before the service runs, and each is named in `error.fields`.\n\nContrast with the next two requests: those bodies are perfectly well-shaped and fail on MEANING, which is why they carry `INVALID_REQUEST` instead."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "const e = pm.response.json().error;",
+                  "pm.test('VALIDATION_ERROR names every offending parameter', () => {",
+                  "  pm.expect(e.code).to.eql('VALIDATION_ERROR');",
+                  "  pm.expect(Object.keys(e.fields)).to.include.members(['from', 'granularity', 'limit', 'cluster']);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 INVALID_REQUEST — range ends before it starts",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/topics?from=2026-09-30&to=2026-04-01",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "topics"
+              ],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "2026-09-30"
+                },
+                {
+                  "key": "to",
+                  "value": "2026-04-01"
+                }
+              ]
+            },
+            "description": "PRD §9.8 — the specification's own worked example of the distinction.\n\nTwo well-formed IST dates, so Zod passes them. The range is nonsense, so the SERVICE rejects it with `INVALID_REQUEST`. Coherence is checked where the fiscal calendar is already resolved, not in the schema, which would have to re-derive it."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "const e = pm.response.json().error;",
+                  "pm.test('INVALID_REQUEST, not VALIDATION_ERROR', () => pm.expect(e.code).to.eql('INVALID_REQUEST'));",
+                  "pm.test('No per-field map — this is not a shape failure', () => pm.expect(e.fields).to.be.undefined);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 INVALID_REQUEST — range wider than the ceiling",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/topics?from=2018-01-01&to=2026-12-31&granularity=month",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "topics"
+              ],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "2018-01-01"
+                },
+                {
+                  "key": "to",
+                  "value": "2026-12-31"
+                },
+                {
+                  "key": "granularity",
+                  "value": "month"
+                }
+              ]
+            },
+            "description": "PRD §9.2, §9.8. Roughly nine years, against a `TOPICS_MAX_RANGE_DAYS` default of 1100 (about three years).\n\nThis ceiling is a SECURITY control, not a tuning knob: without it, one cheap authenticated request schedules unbounded aggregation work across the whole term table. `INVALID_REQUEST` rather than `VALIDATION_ERROR` because the limit is a deployment setting the schema does not know."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "const e = pm.response.json().error;",
+                  "pm.test('INVALID_REQUEST', () => pm.expect(e.code).to.eql('INVALID_REQUEST'));",
+                  "pm.test('Says what the ceiling is', () => pm.expect(e.message.toLowerCase()).to.include('maximum'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "401 — missing token",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/topics",
+            "description": "PRD §9.1. `topicRouter.use(requireAuth)` runs before the limiter and before validation, so an unauthenticated caller can neither read term data nor consume the analytics rate budget."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('UNAUTHORIZED', () => pm.expect(pm.response.json().error.code).to.eql('UNAUTHORIZED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "401 — expired or revoked token",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{expiredAccessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/topics",
+            "description": "PRD §9.3. See the Documents folder for how to populate `expiredAccessToken`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('TOKEN_EXPIRED or TOKEN_INVALID', () => pm.expect(['TOKEN_EXPIRED', 'TOKEN_INVALID']).to.include(pm.response.json().error.code));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "404 — out-of-scope subsidiaryId",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{outOfScopeAccessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/topics?subsidiaryId={{subsidiaryId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "topics"
+              ],
+              "query": [
+                {
+                  "key": "subsidiaryId",
+                  "value": "{{subsidiaryId}}"
+                }
+              ]
+            },
+            "description": "PRD §9.1, §8.3. `outOfScopeAccessToken` holds only `{{otherSubsidiaryId}}` and asks for `{{subsidiaryId}}`.\n\nScope resolution runs FIRST — before the range, before the cache lookup — so a client-supplied subsidiary id never reaches a pipeline OR a cache key unchecked. The refusal is 404, not 403: a 403 would confirm that the subsidiary exists.\n\nThis is also why a cached aggregate cannot cross a grant boundary. The cache key is derived from the caller's resolved scope, so there is no key under which this caller could read the other subsidiary's precomputed cloud."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('NOT_FOUND, never FORBIDDEN', () => pm.expect(pm.response.json().error.code).to.eql('NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "200 — unknown subsidiaryId as an admin (why there is no 404 here)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/topics?subsidiaryId={{unknownId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "topics"
+              ],
+              "query": [
+                {
+                  "key": "subsidiaryId",
+                  "value": "{{unknownId}}"
+                }
+              ]
+            },
+            "description": "PRD §9.1 — the honest counterpart to the \"404 unknown id\" request every other folder carries.\n\nThere is no `/topics/:id`, so the only id here is a FILTER. An admin is unscoped, so `assertSubsidiaryAccess` passes for any well-formed id, and an id that matches no subsidiary is simply an empty scope: **200 with an empty cloud, not 404.**\n\nThat is not a gap. A filter naming nothing is a legitimate question with a legitimately empty answer, and inventing a 404 would mean an admin could probe which subsidiary ids exist — the exact disclosure §9.1 is written to prevent. The out-of-scope 404 above is where the convention actually bites, because there the caller is scoped."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200 — an empty scope, not a missing resource', () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json().data;",
+                  "pm.test('Scope is pinned to the id that matches nothing', () => pm.expect(d.scope.subsidiaryIds).to.eql([pm.variables.get('unknownId')]));",
+                  "pm.test('Honestly empty rather than falsely global', () => pm.expect(d.wordCloud).to.be.an('array').that.is.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "429 — analytics rate limit (send 31+ within a minute)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/topics",
+            "description": "PRD §9.2. `analyticsLimiter` allows 30 requests/minute, keyed on the USER. A cold-cache `/topics` request is the heaviest read in the system, and a cheap authenticated request must not be able to schedule unbounded aggregation work.\n\nSend this repeatedly until it flips to 429 `RATE_LIMIT_EXCEEDED`. The same limiter guards `GET /analytics`, so the two share one budget per user.\n\nNOTE: the limiter inherits `skip: () => env.isTest`, so it is DISABLED under the automated test suite and the 429 path is asserted by a configuration unit test instead. This request is the manual check that the wiring is live on a running server."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 429) {",
+                  "  pm.test('RATE_LIMIT_EXCEEDED', () => pm.expect(pm.response.json().error.code).to.eql('RATE_LIMIT_EXCEEDED'));",
+                  "} else {",
+                  "  pm.test('Still under the limit — send again (expect 200 until the 31st within a minute)', () => pm.expect(pm.response.code).to.eql(200));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "9. Analytics",
+      "description": "The series and breakdown behind the §5.3 dashboard — PRD §4.6, §7.7, §9.2, §9.8, §10.2.\n\nONE route: `GET /api/v1/analytics`. Where `GET /dashboard` gives one snapshot, this gives the same figures BUCKETED over time, broken down by subsidiary, with the queue health and the assumptions used to compute them.\n\nAll three roles, so no `roleGuard` and **no applicable 403** — §2 grants MoC officials analytics explicitly, and a CIL user sees only their own subsidiaries because the scope clause sits inside every pipeline AND inside the cache key. Neither the computation nor the cached result can cross a grant boundary.\n\nTwo things make the numbers checkable rather than merely plausible:\n- `assumptions` ships with every response (`baselineManualMinutesPerDoc`, `minutesPerManualOverride`, `ocrReviewThreshold`, and a prose `extractionAccuracyDefinition`), so \"time saved 40%\" can be recomputed by hand.\n- `null` is used honestly. A `null` block means the caller did not ASK for it via `include`; a `null` percentage means there was no evidence either way. Neither is the same as zero. (The dashboard snapshot deliberately differs: it reports 0 rather than null, because a card cannot render an absence.)\n\nDates are IST calendar dates, exactly as in Topics; `fromUtc`/`toUtc` come back alongside so every figure is reproducible.",
+      "item": [
+        {
+          "name": "GET /analytics (defaults — fiscal year to date, everything)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/analytics",
+            "description": "PRD §4.6, §7.7. No parameters: `granularity=quarter`, `include=all`, `includeBySubsidiary=true`, over the current Indian fiscal year to date.\n\nThe response carries `scope`, `range`, `series` (one `AnalyticsBucket` per period, each with its own `bucketStart`/`bucketEnd` so a chart axis needs no re-derivation), `totals`, `bySubsidiary`, `pipeline` and `assumptions`.\n\n`pipeline` is the §9.7 operational view — `documentsQueued`, `queriesInFlight`, `queriesDeadLettered`, `oldestQueuedAgeSeconds` (null when nothing is queued: an empty queue has no age) and `inFlightPastTimeout`. It is how a stuck worker is detected without reading logs."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json().data;",
+                  "pm.test('All §6.6 blocks present', () => pm.expect(d).to.include.all.keys('scope', 'range', 'series', 'totals', 'bySubsidiary', 'pipeline', 'assumptions'));",
+                  "pm.test('Defaults applied', () => pm.expect(d.range.granularity).to.eql('quarter'));",
+                  "pm.test('Freshness travels with the figures (§4.6)', () => {",
+                  "  pm.expect(d.computedAt).to.be.a('string');",
+                  "  pm.expect(d.cached).to.be.a('boolean');",
+                  "});",
+                  "pm.test('include=all means no block is a not-requested null', () => {",
+                  "  pm.expect(d.totals.documents).to.not.be.null;",
+                  "  pm.expect(d.totals.extraction).to.not.be.null;",
+                  "  pm.expect(d.totals.reports).to.not.be.null;",
+                  "  pm.expect(d.totals.queries).to.not.be.null;",
+                  "});",
+                  "pm.test('Every bucket carries its own UTC window', () => {",
+                  "  d.series.forEach((b) => pm.expect(b).to.include.all.keys('bucket', 'label', 'bucketStart', 'bucketEnd'));",
+                  "});",
+                  "pm.test('Assumptions ship so the figures are checkable by hand', () => {",
+                  "  pm.expect(d.assumptions).to.include.all.keys('baselineManualMinutesPerDoc', 'minutesPerManualOverride', 'ocrReviewThreshold', 'extractionAccuracyDefinition');",
+                  "});",
+                  "pm.test('Pipeline health is exposed for stuck-job detection (§9.7)', () => {",
+                  "  pm.expect(d.pipeline).to.include.all.keys('documentsQueued', 'queriesQueued', 'queriesInFlight', 'queriesDeadLettered', 'oldestQueuedAgeSeconds', 'inFlightPastTimeout');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /analytics (queries only, monthly, no subsidiary breakdown)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/analytics?granularity=month&from=2026-04-01&to=2026-09-30&include=queries&includeBySubsidiary=false",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "analytics"
+              ],
+              "query": [
+                {
+                  "key": "granularity",
+                  "value": "month",
+                  "description": "month | quarter. Quarters are INDIAN FISCAL quarters; `range.fiscalYearStartMonth` says so explicitly."
+                },
+                {
+                  "key": "from",
+                  "value": "2026-04-01",
+                  "description": "IST calendar date, inclusive."
+                },
+                {
+                  "key": "to",
+                  "value": "2026-09-30",
+                  "description": "IST calendar date, inclusive as a whole day."
+                },
+                {
+                  "key": "include",
+                  "value": "queries",
+                  "description": "documents | extraction | reports | queries | all. A SINGLE enum, deliberately not a comma list — the unrequested blocks come back as explicit nulls."
+                },
+                {
+                  "key": "includeBySubsidiary",
+                  "value": "false",
+                  "description": "String enum 'true'/'false'. `false` returns `bySubsidiary: null` and skips the per-subsidiary aggregation entirely."
+                },
+                {
+                  "key": "subsidiaryId",
+                  "value": "{{subsidiaryId}}",
+                  "description": "Optional narrowing. Validated against the caller's grants before it reaches a pipeline or a cache key.",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "PRD §4.6, §1.5. `include=queries` is the §4.4 quality view: `citationCoveragePercent` (answers carrying at least one citation), `citationIntegrityPercent` (proposed citations that survived matching against the chunks actually retrieved), plus `injectionSuspected`, `passagesWithheld` and `deadLettered`.\n\nThe numerator and denominator both ship (`withCitations`, `citationsAccepted`, `citationsDiscarded`), so the percentages are checkable rather than asserted.\n\nWatch what `include` does to the OTHER blocks: `documents`, `extraction` and `reports` come back as `null`, meaning \"not asked for\" — a different statement from a block of zeroes. `automationCoveragePercent` and `timeSavedPercent` are also null here, because both cross-section figures need documents AND extraction to be meaningful."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json().data;",
+                  "pm.test('Window echoed back exactly as sent', () => {",
+                  "  pm.expect(d.range.from).to.eql('2026-04-01');",
+                  "  pm.expect(d.range.to).to.eql('2026-09-30');",
+                  "  pm.expect(d.range.granularity).to.eql('month');",
+                  "});",
+                  "pm.test('Unrequested blocks are explicit nulls, not zeroes', () => {",
+                  "  pm.expect(d.totals.queries).to.not.be.null;",
+                  "  pm.expect(d.totals.documents).to.be.null;",
+                  "  pm.expect(d.totals.extraction).to.be.null;",
+                  "  pm.expect(d.totals.reports).to.be.null;",
+                  "});",
+                  "pm.test('Cross-section figures are null without their inputs', () => {",
+                  "  pm.expect(d.totals.automationCoveragePercent).to.be.null;",
+                  "  pm.expect(d.totals.timeSavedPercent).to.be.null;",
+                  "});",
+                  "pm.test('includeBySubsidiary=false really skips the breakdown', () => pm.expect(d.bySubsidiary).to.be.null);",
+                  "pm.test('Citation percentages ship with their inputs (§1.5)', () => {",
+                  "  pm.expect(d.totals.queries).to.include.all.keys('withCitations', 'citationsAccepted', 'citationsDiscarded', 'citationCoveragePercent', 'citationIntegrityPercent');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /analytics (per-subsidiary breakdown)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/analytics?include=all&includeBySubsidiary=true&granularity=quarter",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "analytics"
+              ],
+              "query": [
+                {
+                  "key": "include",
+                  "value": "all"
+                },
+                {
+                  "key": "includeBySubsidiary",
+                  "value": "true"
+                },
+                {
+                  "key": "granularity",
+                  "value": "quarter"
+                }
+              ]
+            },
+            "description": "PRD §4.6, §5.3. One row per subsidiary in scope: `documentsTotal`, `documentsValidated`, `extractionAccuracyPercent`, `reportsPublished`, `queriesAsked`.\n\n`code` is `null` when the subsidiary row itself has since been removed — the historical documents still count, and dropping them would quietly change a published total.\n\n`queriesAsked` DOES NOT SUM to `totals.queries.total`, by design: a query asked over several subsidiaries counts once against each, because it consumed each of their corpora. Do not build a pie chart on that column."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json().data;",
+                  "pm.test('Breakdown is an array of rows', () => pm.expect(d.bySubsidiary).to.be.an('array'));",
+                  "pm.test('Each row carries the §5.3 columns', () => {",
+                  "  d.bySubsidiary.forEach((r) => pm.expect(r).to.include.all.keys('subsidiaryId', 'code', 'documentsTotal', 'documentsValidated', 'extractionAccuracyPercent', 'reportsPublished', 'queriesAsked'));",
+                  "});",
+                  "pm.test('Breakdown never names a subsidiary outside the resolved scope', () => {",
+                  "  if (!d.scope.unscoped) {",
+                  "    d.bySubsidiary.forEach((r) => pm.expect(d.scope.subsidiaryIds).to.include(r.subsidiaryId));",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 VALIDATION_ERROR — unknown include, bad boolean, bad date",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/analytics?include=everything&includeBySubsidiary=yes&from=01-04-2026&granularity=weekly",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "analytics"
+              ],
+              "query": [
+                {
+                  "key": "include",
+                  "value": "everything",
+                  "description": "Not one of documents | extraction | reports | queries | all."
+                },
+                {
+                  "key": "includeBySubsidiary",
+                  "value": "yes",
+                  "description": "The enum is the literal strings 'true'/'false'."
+                },
+                {
+                  "key": "from",
+                  "value": "01-04-2026",
+                  "description": "Day-first; the pattern demands YYYY-MM-DD."
+                },
+                {
+                  "key": "granularity",
+                  "value": "weekly",
+                  "description": "Only month | quarter exist."
+                }
+              ]
+            },
+            "description": "PRD §9.2. Four SHAPE failures, all caught by Zod before the service runs and all named in `error.fields`.\n\n`includeBySubsidiary` is a string enum rather than `z.coerce.boolean()` on purpose: coercion treats the literal string 'false' as `true`, so `?includeBySubsidiary=false` would silently do the opposite of what it says."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "const e = pm.response.json().error;",
+                  "pm.test('VALIDATION_ERROR names every offending parameter', () => {",
+                  "  pm.expect(e.code).to.eql('VALIDATION_ERROR');",
+                  "  pm.expect(Object.keys(e.fields)).to.include.members(['include', 'includeBySubsidiary', 'from', 'granularity']);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 INVALID_REQUEST — range ends before it starts",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/analytics?from=2026-09-30&to=2026-04-01",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "analytics"
+              ],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "2026-09-30"
+                },
+                {
+                  "key": "to",
+                  "value": "2026-04-01"
+                }
+              ]
+            },
+            "description": "PRD §9.8 — the specification's own worked example, verbatim: \"a report date range ending before it starts\".\n\nBoth dates are well-formed, so the schema passes them; the SERVICE rejects the pair. `INVALID_REQUEST` is the code for schema-valid, logically invalid input."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "const e = pm.response.json().error;",
+                  "pm.test('INVALID_REQUEST, not VALIDATION_ERROR', () => pm.expect(e.code).to.eql('INVALID_REQUEST'));",
+                  "pm.test('No per-field map — this is not a shape failure', () => pm.expect(e.fields).to.be.undefined);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 INVALID_REQUEST — more buckets than the ceiling allows",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/analytics?granularity=month&from=2019-01-01&to=2026-12-31",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "analytics"
+              ],
+              "query": [
+                {
+                  "key": "granularity",
+                  "value": "month",
+                  "description": "96 monthly buckets over this window."
+                },
+                {
+                  "key": "from",
+                  "value": "2019-01-01"
+                },
+                {
+                  "key": "to",
+                  "value": "2026-12-31"
+                }
+              ]
+            },
+            "description": "PRD §9.2, §9.8. `ANALYTICS_MAX_BUCKETS` defaults to 24; this window asks for roughly 96 monthly buckets.\n\nThe ceiling is enforced in the service rather than in Zod because it depends on the GRANULARITY as well as the two dates — a pair the schema would have to re-derive the fiscal calendar to judge. Without it, `granularity=month` over a century is one cheap request that schedules a hundred group stages per collection: a denial of service, not a slow query.\n\nThe same window at `granularity=quarter` is 32 buckets and still over the limit; narrow the range or coarsen the granularity. The message names the bucket count and the maximum so the client can do exactly that."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "const e = pm.response.json().error;",
+                  "pm.test('INVALID_REQUEST', () => pm.expect(e.code).to.eql('INVALID_REQUEST'));",
+                  "pm.test('Message names the count and the ceiling', () => {",
+                  "  pm.expect(e.message.toLowerCase()).to.include('bucket');",
+                  "  pm.expect(e.message.toLowerCase()).to.include('maximum');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "401 — missing token",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/analytics",
+            "description": "PRD §9.1. `analyticsRouter.use(requireAuth)` runs before the limiter and before validation, so an unauthenticated caller can neither read the figures nor consume the analytics rate budget."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('UNAUTHORIZED', () => pm.expect(pm.response.json().error.code).to.eql('UNAUTHORIZED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "401 — expired or revoked token",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{expiredAccessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/analytics",
+            "description": "PRD §9.3. See the Documents folder for how to populate `expiredAccessToken`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('TOKEN_EXPIRED or TOKEN_INVALID', () => pm.expect(['TOKEN_EXPIRED', 'TOKEN_INVALID']).to.include(pm.response.json().error.code));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "404 — out-of-scope subsidiaryId",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{outOfScopeAccessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/analytics?subsidiaryId={{subsidiaryId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "analytics"
+              ],
+              "query": [
+                {
+                  "key": "subsidiaryId",
+                  "value": "{{subsidiaryId}}"
+                }
+              ]
+            },
+            "description": "PRD §9.1, §4.6. `outOfScopeAccessToken` holds only `{{otherSubsidiaryId}}` and asks for `{{subsidiaryId}}`.\n\nScope resolution is step 1 of `getAnalytics`, before the range is parsed and before the cache is consulted, so a client-supplied subsidiary id never reaches a pipeline or a cache key unchecked. 404, not 403 — a 403 would confirm the subsidiary exists.\n\nThis is also the reason the cache is safe: the key folds in the caller's RESOLVED scope alongside the payload version and the assumptions fingerprint, so there is no key under which this caller could read another subsidiary's precomputed aggregate, and a retuned metric constant cannot serve figures computed under the old rules for a full TTL."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('NOT_FOUND, never FORBIDDEN', () => pm.expect(pm.response.json().error.code).to.eql('NOT_FOUND'));",
+                  "pm.test('No figures leak with the refusal', () => pm.expect(pm.response.text()).to.not.include('bySubsidiary'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "200 — unknown subsidiaryId as an admin (why there is no 404 here)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/analytics?subsidiaryId={{unknownId}}&include=documents&includeBySubsidiary=false",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "analytics"
+              ],
+              "query": [
+                {
+                  "key": "subsidiaryId",
+                  "value": "{{unknownId}}"
+                },
+                {
+                  "key": "include",
+                  "value": "documents"
+                },
+                {
+                  "key": "includeBySubsidiary",
+                  "value": "false"
+                }
+              ]
+            },
+            "description": "PRD §9.1 — the counterpart to the \"404 unknown id\" request in the resource folders, and the honest reason it does not apply here.\n\nThere is no `/analytics/:id`; the only id is a FILTER. An admin is unscoped, so any well-formed id passes the access check, and one matching no subsidiary is simply an empty scope: **200 with zeroed counts, not 404.**\n\nInventing a 404 would let an admin enumerate which subsidiary ids exist. The out-of-scope request above is where the 404 convention actually applies, because there the caller is scoped."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200 — an empty scope, not a missing resource', () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json().data;",
+                  "pm.test('Scope is pinned to the id that matches nothing', () => pm.expect(d.scope.subsidiaryIds).to.eql([pm.variables.get('unknownId')]));",
+                  "pm.test('Honestly zero rather than falsely global', () => pm.expect(d.totals.documents.total).to.eql(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "429 — analytics rate limit (send 31+ within a minute)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/analytics",
+            "description": "PRD §9.2. `analyticsLimiter` allows 30 requests/minute, keyed on the USER, and is SHARED with `GET /topics` — the two heaviest reads in the system draw on one budget per caller.\n\nSend this repeatedly until it flips to 429 `RATE_LIMIT_EXCEEDED`.\n\nNOTE: the limiter inherits `skip: () => env.isTest`, so it is DISABLED under the automated test suite and the 429 path is asserted by a configuration unit test rather than an integration test. This request is the manual check that the wiring is live on a running server."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 429) {",
+                  "  pm.test('RATE_LIMIT_EXCEEDED', () => pm.expect(pm.response.json().error.code).to.eql('RATE_LIMIT_EXCEEDED'));",
+                  "} else {",
+                  "  pm.test('Still under the limit — send again (expect 200 until the 31st within a minute)', () => pm.expect(pm.response.code).to.eql(200));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "10. Audit",
+      "description": "Cursor-paginated: offset paging would skip rows as new ones arrive.",
+      "item": [
+        {
+          "name": "Audit log",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/audit-logs?limit=25",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "audit-logs"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "25"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Standard envelope\", () => pm.expect(pm.response.json()).to.have.property(\"success\"));",
+                  "pm.test(\"Cursor pagination\", () => pm.expect(pm.response.json().pagination).to.have.property(\"nextCursor\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "11. Failure scenarios",
+      "description": "Cross-cutting failures that belong to no single resource — the shared middleware layer: authentication, the global validator, the NoSQL-operator guard, the catch-all 404, and the auth rate limiter.\n\nThe PER-ENDPOINT §9.9 coverage is NOT here. Each resource folder carries its own failure requests (400 VALIDATION_ERROR, 400 INVALID_REQUEST, 401 missing, 401 expired, 403 wrong role, 404 unknown id, 404 out-of-scope id, 409, 429) immediately after its happy paths, because a mode only means something against the endpoint that can fail in it.",
+      "item": [
+        {
+          "name": "401 — no token",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "me"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 401\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 — invalid email",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/request-code",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "request-code"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"not-an-email\"\n}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"Field errors\", () => pm.expect(pm.response.json().error.fields).to.be.an(\"object\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 — NoSQL operator injection",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/request-code",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "request-code"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": {\n    \"$ne\": null\n  }\n}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 400\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "404 — unknown route",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/does-not-exist",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "does-not-exist"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 404\", () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "404 — out-of-scope subsidiary (not 403)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/audit-logs?subsidiaryId=507f1f77bcf86cd799439011",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "audit-logs"
+              ],
+              "query": [
+                {
+                  "key": "subsidiaryId",
+                  "value": "507f1f77bcf86cd799439011"
+                }
+              ]
+            },
+            "description": "A subsidiary you do not hold returns 404, never 403 — 403 would confirm it exists."
+          }
+        },
+        {
+          "name": "429 — auth rate limit (send 11x in a minute)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/request-code",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "request-code"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"ratelimit@cil.gov.in\"\n}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

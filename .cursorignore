@@ -1,0 +1,41 @@
+# Paths an AI coding assistant must never read into its context — PRD §9.10.
+#
+# This mirrors .gitignore's secret deny-list, for a different threat. .gitignore
+# stops a secret reaching the repository; this stops one reaching a model
+# prompt, a completion log, or a third-party provider. A file can be correctly
+# gitignored and still be read straight into an assistant's context window,
+# which is why the two lists exist separately and must be kept in step.
+
+# Environment & secrets — only .env.example may be read
+.env
+.env.*
+!.env.example
+
+# Private keys and common secret filenames
+*.pem
+*.key
+id_rsa
+id_ed25519
+*.p12
+*.pfx
+
+# Dependencies and build output — noise, and large enough to crowd out real context
+node_modules/
+dist/
+build/
+out/
+*.tsbuildinfo
+coverage/
+.nyc_output/
+
+# Uploaded government source documents (local storage adapter).
+# These are the untrusted third-party material the whole product ingests
+# (§9.5) — they must never be fed back into an assistant's prompt.
+backend/var/
+
+# Logs may contain request context
+*.log
+npm-debug.log*
+
+# Test runtime artifacts
+.mongodb-binaries/

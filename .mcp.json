@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "mongodb": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "mongodb-mcp-server", "--readOnly"],
+      "env": {
+        "MDB_MCP_CONNECTION_STRING": "${MDB_MCP_CONNECTION_STRING}"
+      }
+    },
+    "postman": {
+      "type": "http",
+      "url": "https://mcp.postman.com/mcp"
+    }
+  }
+}

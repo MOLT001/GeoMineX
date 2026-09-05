@@ -1,0 +1,36 @@
+# Repository-root ignores. `backend/.gitignore` covers the backend tree.
+
+# Secrets — NEVER commit
+.env
+.env.*
+!.env.example
+
+# Editor MCP config: VS Code's mcp.json format allows a connection string to be
+# pasted inline, which is exactly how a database password ends up in git.
+# Claude Code's own config lives in .mcp.json at this level and reads its
+# credential from the environment instead — see .mcp.json.
+.vscode/mcp.json
+
+# Private keys and common secret filenames
+*.pem
+*.key
+id_rsa
+id_ed25519
+*.p12
+*.pfx
+
+# Dependencies & build output
+node_modules/
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Logs & coverage
+*.log
+npm-debug.log*
+coverage/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
