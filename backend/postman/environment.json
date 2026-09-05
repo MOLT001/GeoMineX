@@ -16,9 +16,10 @@
     },
     {
       "key": "adminEmail",
-      "value": "admin@example.gov.in",
+      "value": "mavdivu@gmail.com",
       "type": "default",
-      "enabled": true
+      "enabled": true,
+      "description": "The seeded admin. Must match the account created by: npm run seed -- --email <this>. Environment values OVERRIDE collection values, so a stale address here makes sign-in return 200 with no code."
     },
     {
       "key": "otpCode",

@@ -27,13 +27,13 @@ const shared: Partial<Options> = {
   },
 };
 
-export const globalLimiter = rateLimit({ ...shared, windowMs: 60_000, max: 100 });
+export const globalLimiter = rateLimit({ ...shared, windowMs: 60_000, max: env.RATE_LIMIT_GLOBAL_MAX });
 
 /** Strict: OTP issuance and verification are the brute-force surface. */
-export const authLimiter = rateLimit({ ...shared, windowMs: 60_000, max: 10 });
+export const authLimiter = rateLimit({ ...shared, windowMs: 60_000, max: env.RATE_LIMIT_AUTH_MAX });
 
 /** Public, unauthenticated routes — invite accept. */
-export const publicLimiter = rateLimit({ ...shared, windowMs: 60_000, max: 20 });
+export const publicLimiter = rateLimit({ ...shared, windowMs: 60_000, max: env.RATE_LIMIT_PUBLIC_MAX });
 
 /**
  * Keyed on the USER, not the IP.
@@ -55,11 +55,11 @@ const byUser = (req: { user?: { id: string }; ip?: string }) =>
  * expensive authenticated operation in the system and — once a hosted provider
  * is wired — the only one that costs money per call.
  */
-export const aiLimiter = rateLimit({ ...shared, windowMs: 60_000, max: 12, keyGenerator: byUser });
+export const aiLimiter = rateLimit({ ...shared, windowMs: 60_000, max: env.RATE_LIMIT_AI_MAX, keyGenerator: byUser });
 
 /**
  * A cold-cache /topics or /analytics request is the heaviest READ in the
  * system. A cheap authenticated request must not be able to schedule unbounded
  * aggregation work.
  */
-export const analyticsLimiter = rateLimit({ ...shared, windowMs: 60_000, max: 30, keyGenerator: byUser });
+export const analyticsLimiter = rateLimit({ ...shared, windowMs: 60_000, max: env.RATE_LIMIT_ANALYTICS_MAX, keyGenerator: byUser });

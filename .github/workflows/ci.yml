@@ -51,3 +51,8 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # .gitleaks.toml keeps every upstream rule and allowlists only the
+          # documentation placeholders (replace_with_*, your_*) that .env.example
+          # and instructions.md exist to carry. Keyed on the value, not the path,
+          # so a real secret in those files still fails the build.
+          GITLEAKS_CONFIG: ${{ github.workspace }}/.gitleaks.toml

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { safeText } from '../../utils/safeText.js';
 import { ROLES } from './user.model.js';
 
 const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'must be a valid id');
@@ -12,14 +13,14 @@ const emailField = z
 
 export const inviteUserSchema = z.object({
   email: emailField,
-  name: z.string().min(1).max(120).trim(),
+  name: safeText({ max: 120, label: 'name' }),
   role: z.enum(ROLES),
   subsidiaryAccess: z.array(objectId).default([]),
 });
 
 export const updateUserSchema = z
   .object({
-    name: z.string().min(1).max(120).trim().optional(),
+    name: safeText({ max: 120, label: 'name' }).optional(),
     role: z.enum(ROLES).optional(),
     isActive: z.boolean().optional(),
     /**

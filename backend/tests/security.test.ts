@@ -6,6 +6,7 @@ import path from 'node:path';
 import { api, makeUser, makeSubsidiary, authFor } from './helpers.js';
 import { InviteToken } from '../src/modules/auth/inviteToken.model.js';
 import { AuditLog } from '../src/modules/audit/auditLog.model.js';
+import { User } from '../src/modules/users/user.model.js';
 
 describe('Service index', () => {
   it('serves a helpful index at / instead of a 404', async () => {
@@ -406,5 +407,70 @@ describe('Model output can never trigger a privileged action (PRD §9.5)', () =>
     ]) {
       expect(FORBIDDEN_IMPORTS.some((f) => f.re.test(permitted))).toBe(false);
     }
+  });
+});
+
+describe('User-supplied text is normalised, not just document text (PRD §9.2, §9.5)', () => {
+  /*
+   * `normaliseUntrusted` guarded the retrieval path from the start, but nothing
+   * applied it to request bodies — so a null byte inside a PDF was stripped
+   * while the same byte in a `name` field was stored verbatim. These cover the
+   * weaker of the two paths.
+   */
+  it('strips a null byte from a submitted name rather than storing it raw', async () => {
+    const admin = await makeUser({ email: 'nulladmin@moc.gov.in', role: 'admin' });
+    const auth = await authFor(admin.id, 'admin');
+
+    const res = await api()
+      .post('/api/v1/users/invite')
+      .set(auth.header)
+      .send({ email: 'nullbyte@cil.gov.in', name: 'A\u0000B', role: 'cil_user', subsidiaryAccess: [] })
+      .expect(201);
+
+    expect(res.body.data.name).toBe('AB');
+
+    const stored = await User.findOne({ email: 'nullbyte@cil.gov.in' }).lean();
+    expect(stored!.name).not.toContain('\u0000');
+  });
+
+  it('strips a bidi override, which would otherwise reverse how the name renders', async () => {
+    const admin = await makeUser({ email: 'bidiadmin@moc.gov.in', role: 'admin' });
+    const auth = await authFor(admin.id, 'admin');
+
+    const res = await api()
+      .post('/api/v1/users/invite')
+      .set(auth.header)
+      .send({ email: 'bidi@cil.gov.in', name: 'report\u202Efdp.exe', role: 'cil_user', subsidiaryAccess: [] })
+      .expect(201);
+
+    expect(res.body.data.name).not.toMatch(/[\u202A-\u202E\u2066-\u2069]/);
+  });
+
+  it('rejects a name made only of invisible characters instead of storing a blank', async () => {
+    const admin = await makeUser({ email: 'blankadmin@moc.gov.in', role: 'admin' });
+    const auth = await authFor(admin.id, 'admin');
+
+    // Normalisation runs BEFORE the length check, so this collapses to empty
+    // and fails min(1) rather than creating a user with no name.
+    const res = await api()
+      .post('/api/v1/users/invite')
+      .set(auth.header)
+      .send({ email: 'blank@cil.gov.in', name: '\u200B\u200B\u0000', role: 'cil_user', subsidiaryAccess: [] });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('leaves legitimate non-Latin scripts and emoji intact', async () => {
+    const admin = await makeUser({ email: 'unicodeadmin@moc.gov.in', role: 'admin' });
+    const auth = await authFor(admin.id, 'admin');
+
+    const res = await api()
+      .post('/api/v1/users/invite')
+      .set(auth.header)
+      .send({ email: 'devanagari@cil.gov.in', name: 'दिव्यांशु सिंह 🙂', role: 'cil_user', subsidiaryAccess: [] })
+      .expect(201);
+
+    expect(res.body.data.name).toBe('दिव्यांशु सिंह 🙂');
   });
 });

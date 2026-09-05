@@ -55,6 +55,7 @@ Without SMTP configured, OTP codes and invite links are written to the **develop
 | `npm run dev` | Watch-mode server |
 | `npm run dev:db` | Throwaway local MongoDB on :27017 (dev only) |
 | `npm run seed` | Create the first admin + subsidiaries |
+| `npm run indexes:sync` | **Build all database indexes — required after every production deploy** |
 | `npm run backfill:terms` | One-off: index word frequencies for pre-Phase-2 documents |
 | `npm run build` / `npm start` | Compile to `dist/`, then run |
 | `npm run typecheck` | `tsc --noEmit`, strict mode |
@@ -63,6 +64,18 @@ Without SMTP configured, OTP codes and invite links are written to the **develop
 | `npm run audit:ci` | Fails on any high/critical advisory |
 
 `DEBUG_LOGS=1` re-enables logging during tests when a failure needs the server-side reason.
+
+## Deploying
+
+`src/config/db.ts` sets `autoIndex: !env.isProduction`, so **production does not build indexes on boot** — that is deliberate (rebuilding a large collection under live traffic is worse), but it means something has to build them:
+
+```bash
+npm run indexes:sync
+```
+
+Run it after every deploy that touches a schema. It is idempotent, and it also drops indexes the schema no longer declares.
+
+Skipping it does not fail loudly. The server starts fine, then: `$text` search throws `text index required for $text query` — killing AI query answering (§4.4) and document search (§5.7); TTL indexes are absent, so OTP codes, invite tokens and sessions accumulate instead of expiring (§8.2); the unique constraint on `users.email` is gone; and every scoped query becomes a collection scan.
 
 ## Authentication flow
 

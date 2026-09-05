@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { safeText } from '../../utils/safeText.js';
 
 const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'must be a valid id');
 
@@ -29,7 +30,7 @@ export const verifyCodeSchema = z.object({
 
 export const acceptInviteSchema = z.object({
   token: z.string().min(20, 'invalid invitation token'),
-  name: z.string().min(1).max(120).trim().optional(),
+  name: safeText({ max: 120, label: 'name' }).optional(),
 });
 
 export const sessionIdParamSchema = z.object({

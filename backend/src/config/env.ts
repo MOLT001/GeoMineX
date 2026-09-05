@@ -78,6 +78,22 @@ const envSchema = z
     // stays untouched; raising that would strip protection from every JSON route.
     MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(26_214_400), // 25 MiB
 
+    // ── Rate limits (PRD §9.2) ────────────────────────────────────────────
+    /*
+     * Rate limits, per 60-second window (PRD §9.2).
+     *
+     * Tunable because the right number is environment-specific: a shared
+     * government NAT needs more headroom than a single developer, and an
+     * end-to-end suite that exercises the auth flow repeatedly would otherwise
+     * throttle itself. The DEFAULTS are the production values — an environment
+     * has to opt into anything looser, so forgetting to set them is safe.
+     */
+    RATE_LIMIT_GLOBAL_MAX: z.coerce.number().int().positive().default(100),
+    RATE_LIMIT_AUTH_MAX: z.coerce.number().int().positive().default(10),
+    RATE_LIMIT_PUBLIC_MAX: z.coerce.number().int().positive().default(20),
+    RATE_LIMIT_AI_MAX: z.coerce.number().int().positive().default(12),
+    RATE_LIMIT_ANALYTICS_MAX: z.coerce.number().int().positive().default(30),
+
     // ── Extraction / OCR (PRD §11.2, §11.7) ──────────────────────────────
     OCR_PROVIDER: z.enum(['local']).default('local'),
     // Extractions at or below this confidence are flagged for manual review (§4.1).

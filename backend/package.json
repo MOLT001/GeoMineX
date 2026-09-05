@@ -20,7 +20,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "audit:ci": "npm audit --audit-level=high"
+    "audit:ci": "npm audit --audit-level=high",
+    "indexes:sync": "tsx src/scripts/syncIndexes.ts"
   },
   "dependencies": {
     "cookie-parser": "^1.4.7",

@@ -1,0 +1,45 @@
+# Gitleaks configuration — GeoMineX
+#
+# The CI secret scan (PRD §9.9) failed on 6 findings, all of which were
+# PLACEHOLDER values in documentation and .env.example:
+#
+#   instructions.md:656   ENCRYPTION_KEY=replace_with_64_char_hex
+#   backend/.env.example  JWT_ACCESS_SECRET=replace_with_64_char_hex
+#   instructions.md:580   GOOGLE_CLIENT_SECRET=your_google_client_secret
+#   ...and three more of the same shape.
+#
+# Those files exist precisely so a reader knows which variables to set, so the
+# placeholders cannot be removed. A scanner that always fails is a scanner
+# everyone learns to ignore — which is strictly worse than no scanner, because
+# it hides the one finding that matters.
+#
+# This allowlist is deliberately keyed on the VALUE, not the file path. A real
+# secret pasted into .env.example or instructions.md by mistake still trips the
+# scan; only strings that literally say "replace me" are excused.
+
+[extend]
+# Keep all ~100 upstream rules — this file narrows, never widens.
+useDefault = true
+
+[allowlist]
+description = "Documentation placeholders — values that announce they are not real"
+
+regexes = [
+  # backend/.env.example and instructions.md: replace_with_64_char_hex,
+  # replace_with_a_DIFFERENT_64_char_hex, replace_with_exactly_64_hex_chars
+  '''replace_with[A-Za-z0-9_]*''',
+  # SMTP_PASS=replace_me
+  '''^replace_me$''',
+  # your_google_client_secret, your_smtp_api_key, your_vapid_private_key
+  '''^your_[a-z0-9_]+$''',
+  # Angle-bracket placeholders in prose: <your-api-key>
+  '''^<[A-Za-z0-9_ -]+>$''',
+]
+
+paths = [
+  # Lockfiles carry integrity hashes that look like high-entropy secrets.
+  '''(^|/)package-lock\.json$''',
+  '''(^|/)node_modules/''',
+  # Uploaded source documents — never committed, but belt and braces.
+  '''(^|/)var/''',
+]

@@ -1,22 +1,23 @@
 import { z } from 'zod';
+import { safeText } from '../../utils/safeText.js';
 import { REPORT_STATUSES } from './report.model.js';
 
 const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'must be a valid id');
 
 const sectionSchema = z.object({
-  heading: z.string().trim().min(1).max(200),
+  heading: safeText({ max: 200, label: 'heading' }),
   body: z.string().max(50_000),
 });
 
 export const createTemplateSchema = z.object({
-  name: z.string().trim().min(1).max(150),
-  description: z.string().trim().max(500).optional(),
+  name: safeText({ max: 150, label: 'name' }),
+  description: safeText({ min: 0, max: 500, label: 'description' }).optional(),
   sections: z.array(sectionSchema).min(1).max(50),
   subsidiaryScope: z.array(objectId).max(50).default([]),
 });
 
 export const createReportSchema = z.object({
-  title: z.string().trim().min(1).max(250),
+  title: safeText({ max: 250, label: 'title' }),
   templateId: objectId,
   subsidiaryId: objectId,
   /**
@@ -27,14 +28,14 @@ export const createReportSchema = z.object({
 });
 
 export const updateReportSchema = z.object({
-  title: z.string().trim().min(1).max(250).optional(),
+  title: safeText({ max: 250, label: 'title' }).optional(),
   sections: z.array(sectionSchema).min(1).max(50).optional(),
-  changeSummary: z.string().trim().max(500).optional(),
+  changeSummary: safeText({ min: 0, max: 500, label: 'change summary' }).optional(),
 });
 
 /** Archiving is irreversible in effect, so it takes typed confirmation (§8.3). */
 export const archiveReportSchema = z.object({
-  confirm: z.string().trim().min(1),
+  confirm: safeText({ max: 250, label: 'confirmation' }),
 });
 
 export const listReportsQuerySchema = z.object({

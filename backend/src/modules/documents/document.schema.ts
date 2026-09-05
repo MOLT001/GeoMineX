@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { safeText } from '../../utils/safeText.js';
 import { DOCUMENT_STATUSES, DOCUMENT_TYPES } from './document.model.js';
 
 const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'must be a valid id');
@@ -30,9 +31,9 @@ export const listDocumentsQuerySchema = z.object({
 export const documentIdParamSchema = z.object({ id: objectId });
 
 export const overrideFieldSchema = z.object({
-  value: z.string().trim().min(1).max(2000),
+  value: safeText({ max: 2000, label: 'value' }),
   /** §4.5 — an override is only auditable if the reason is recorded. */
-  reason: z.string().trim().min(3).max(500),
+  reason: safeText({ min: 3, max: 500, label: 'reason' }),
 });
 
 export type ListDocumentsQuery = z.infer<typeof listDocumentsQuerySchema>;

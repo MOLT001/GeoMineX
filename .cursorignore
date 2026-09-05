@@ -11,6 +11,13 @@
 .env.*
 !.env.example
 
+# Editor / tool MCP configuration. VS Code's mcp.json format allows a database
+# connection string to be pasted inline, so this file routinely holds a live
+# credential even though it looks like ordinary config.
+.vscode/mcp.json
+.mcp.json
+.claude/settings.local.json
+
 # Private keys and common secret filenames
 *.pem
 *.key

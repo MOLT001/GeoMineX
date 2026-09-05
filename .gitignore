@@ -34,3 +34,28 @@ coverage/
 # OS / editor noise
 .DS_Store
 Thumbs.db
+
+# Claude Code — machine-local settings. `.claude/settings.json` (shared team
+# config) is deliberately NOT ignored; only the per-machine override is.
+.claude/settings.local.json
+
+# Editors
+.idea/
+*.swp
+*.swo
+*~
+
+# Frontend build output (Next.js lands here in the next phase)
+.next/
+.turbo/
+.vercel/
+
+# Test/report output
+newman/
+playwright-report/
+test-results/
+.eslintcache
+
+# Scratch files
+*.tmp
+*.bak

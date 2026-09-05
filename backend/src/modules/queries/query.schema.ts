@@ -7,6 +7,7 @@
  * reach the resource behind it is a separate, scoped query in the service.
  */
 import { z } from 'zod';
+import { safeText } from '../../utils/safeText.js';
 import { QUERY_STATUSES, QUERY_REVIEW_STATUSES } from './query.model.js';
 
 /** Same literal as document.schema.ts / report.schema.ts. */
@@ -20,7 +21,7 @@ const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'must be a valid id');
  * worker, so the two cannot disagree about what was asked for.
  */
 export const createQuerySchema = z.object({
-  questionText: z.string().trim().min(10).max(2000),
+  questionText: safeText({ min: 10, max: 2000, label: 'question' }),
   isParliamentary: z.boolean().default(false),
   /** Optional. Omitted = every subsidiary the caller holds (all, for an admin). */
   subsidiaryId: objectId.optional(),
@@ -57,9 +58,9 @@ export const listQueriesQuerySchema = z.object({
  */
 export const reviewQuerySchema = z
   .object({
-    officialResponseText: z.string().trim().min(1).max(2000).optional(),
+    officialResponseText: safeText({ max: 2000, label: 'official response' }).optional(),
     reviewStatus: z.enum(['pending', 'approved', 'rejected']).optional(),
-    reviewNote: z.string().trim().max(500).optional(),
+    reviewNote: safeText({ min: 0, max: 500, label: 'review note' }).optional(),
     linkedReportId: objectId.nullable().optional(),
     isParliamentary: z.boolean().optional(),
   })
