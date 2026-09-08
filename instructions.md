@@ -46,7 +46,7 @@ Every row below is a place where following this blueprint literally would build 
 | This document | What it says | What GeoMineX actually does | PRD authority |
 |---|---|---|---|
 | §1 — Auth | Google OAuth + email/password, Passport.js | **Passwordless** OTP / magic link, admin-provisioned; **no self-serve signup**, no Passport, no passwords | §2, §5.2, §9.3, §11.1 |
-| §1 — Password hashing | bcryptjs for passwords | No passwords exist. bcrypt appears only for refresh-token hashing, and that inheritance is **flagged as the wrong primitive** for high-entropy tokens | §9.3, §11.11 |
+| §1 — Password hashing | bcryptjs for passwords | No passwords exist, and **bcrypt is not a dependency**. Refresh tokens are hashed with HMAC-SHA256 (`utils/secureToken.ts`) — §11.11 resolved in PRD v1.3 | §9.3, §11.11 |
 | §1 — Frontend / Routing | React + Vite SPA, `react-router-dom` | React + **Next.js** | §7, §10.5 |
 | §1 — Job scheduling | `node-cron` | Durable queue + worker with a real state machine — cron cannot express it. See **Section 4a** | §4.1, §7, §9.4, §9.7 |
 | §1 — Domain UI | `<YOUR_DOMAIN_UI_LIB>` | Word cloud, trend/summary charts, streaming AI chat with inline citations | §5.6, §5.7 |
@@ -55,18 +55,20 @@ Every row below is a place where following this blueprint literally would build 
 | §4 — middleware order | Ordered list ending in a global `10kb` body limit | Same controls, the PRD's order; body limits are **per-route**, not one global cap | §9.2, §9.2.1 |
 | §4 / §6 — `assertOwnership()` | Single-tenant: every query filters by `userId` | `assertSubsidiaryAccess()` / `assertResourceAccess()` — subsidiary-scoped multi-tenant with cross-tenant reviewer roles. **Accepted deviation — do not "fix" it back** | §9.1, §10.1 |
 | §6 / §8 — CSP | "set by backend helmet" | Helmet's CSP covers **API responses only**. Page CSP is set by Next — see Section 8 | §9.13 |
-| §7 — Frontend Architecture | Vite + Axios + `import.meta.env` + `react-router-dom` | Next.js. The in-memory token store here has a **known incompatibility with SSR** that this document never mentions | §10.5, §11.10 |
+| §7 — Frontend Architecture | Vite + Axios + `import.meta.env` + `react-router-dom` | Next.js App Router. The in-memory token store's **SSR incompatibility** is real but moot — §11.10 resolved to client-side fetching, so no authenticated view is server-rendered. Note Next 16 renamed `middleware.ts` to `app/proxy.ts`, and it cannot do auth: the refresh cookie's `Path=/api/v1/auth` scope means the server never sees it | §10.5, §11.10 |
 | §11 — Master Prompts | Unfilled `<YOUR_INDUSTRY>` placeholders, generic stack | **§11.0** below carries the GeoMineX values; §11.1–§11.4 have been amended to match | §13 |
 | §12 — Domain Add-Ons | Five add-ons, none for this domain | **§12 "Document Intelligence / AI"** — a pointer add-on; the specification itself lives in the PRD | §4.1–§4.5, §9.5 |
 
 
-### Two PRD decisions are still open and block implementation
+### Both blocking PRD decisions are now resolved (PRD v1.3)
 
 
-Neither is resolvable from this document. Do not let a pattern here decide them by default.
+This section previously listed two open decisions that blocked implementation. Both were closed in PRD v1.3 — not by deliberation, but by the backend code, which had already made them. They are recorded here rather than deleted outright because each *constrains* how this blueprint may be applied.
 
-1. **PRD §11.9 — deployment topology.** Determines cookie attributes, CORS configuration, and whether a CSRF token layer exists. Needed before the auth module. This blueprint's `SameSite=Strict` default assumes same-origin, and is not safe to assume alongside its own split-origin deploy rows (Vercel + Render).
-2. **PRD §11.10 — authenticated fetching under Next.js.** Determines the shape of every authenticated data call. Needed before frontend work. §7's `tokenStore.ts` pattern cannot be read by server components.
+1. **PRD §11.9 — deployment topology → SAME-SITE.** `backend/src/config/env.ts` fails the boot on `DEPLOY_TOPOLOGY=cross-site`, because §9.14's CSRF token layer was never implemented. This blueprint's `SameSite=Strict` default is therefore correct for this project — but it is correct *by verification*, not by assumption, and the deploy rows below that imply split origins (Vercel frontend + Render backend on different hosts) are **not** usable as written. The Next.js app must proxy `/api/v1/*` to the API via `rewrites()` so the browser sees one origin.
+2. **PRD §11.10 — authenticated fetching under Next.js → CLIENT-SIDE.** The refresh cookie is scoped `Path=/api/v1/auth`, so a Next server cannot fetch application data on the user's behalf. §7's `tokenStore.ts` pattern stands; the SSR incompatibility noted there is real but moot, because no authenticated view is server-rendered.
+
+**One consequence this document does not otherwise cover.** Refresh rotation revokes the *previous session document* and access tokens are bound to it via `sid`, so a successful refresh invalidates every access token issued earlier in that family. §7's single-flight pattern prevents duplicate refreshes within one browsing context but says nothing about a second tab, which holds its own module-level token and will be silently invalidated. A multi-tab application must share the rotated credential across contexts (`BroadcastChannel`) and must not treat `TOKEN_INVALID` as immediately terminal.
 
 
 ---

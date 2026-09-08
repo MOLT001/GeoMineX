@@ -46,3 +46,7 @@ npm-debug.log*
 
 # Test runtime artifacts
 .mongodb-binaries/
+
+# Frontend build output (Next.js). Generated, large, and pointless to index.
+frontend/.next/
+frontend/out/

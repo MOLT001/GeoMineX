@@ -73,8 +73,25 @@ async function computeMetrics(
 ): Promise<Omit<DashboardMetrics, 'cached'>> {
   const match = matchStage(subsidiaryIds);
 
+  /**
+   * The three reads below are INDEPENDENT — no result feeds another — so they
+   * are issued together rather than awaited in turn.
+   *
+   * That matters more than it looks. Measured against Atlas from India, each
+   * round trip dominates the work itself: with five documents in the database
+   * the aggregations are trivial, yet this function took roughly fifteen
+   * seconds sequentially and the dashboard intermittently exceeded the proxy
+   * timeout. Latency, not data volume, was the whole cost. Issuing them in
+   * parallel collapses three waits into one.
+   *
+   * §4.6 already flagged this surface as the expensive one — "the most
+   * expensive query in the system, while sitting on the landing page for every
+   * role" — and the metrics cache only holds for METRICS_CACHE_TTL_SECONDS, so
+   * whoever loads the dashboard first after each expiry pays the full price.
+   */
+
   // Document counts by status — one pass, in the database (§4.6).
-  const [docAgg] = await DocumentModel.aggregate<{
+  const documentCounts = DocumentModel.aggregate<{
     total: number;
     validated: number;
     failed: number;
@@ -95,10 +112,8 @@ async function computeMetrics(
     { $project: { _id: 0, total: 1, validated: 1, failed: 1, awaitingReview: 1 } },
   ]);
 
-  const docs = docAgg ?? { total: 0, validated: 0, failed: 0, awaitingReview: 0 };
-
   // Field-level accuracy, plus how many distinct documents needed correction.
-  const [fieldAgg] = await ExtractedField.aggregate<{
+  const fieldAccuracy = ExtractedField.aggregate<{
     totalFields: number;
     overriddenFields: number;
     correctedDocuments: number;
@@ -124,8 +139,6 @@ async function computeMetrics(
     },
   ]);
 
-  const fields = fieldAgg ?? { totalFields: 0, overriddenFields: 0, correctedDocuments: 0 };
-
   /**
    * Only `reviewStatus: 'pending'` — the HUMAN backlog. A `failed` or
    * `dead_lettered` query is an operational fault, not a review, and it is
@@ -138,7 +151,19 @@ async function computeMetrics(
     ...scopeContainmentClause(user),
     reviewStatus: 'pending',
   };
-  const queriesPendingReview = await QueryModel.countDocuments(pendingReviewFilter);
+  const pendingReviewCount = QueryModel.countDocuments(pendingReviewFilter);
+
+  // One wait instead of three. Mongoose queries are thenables, so they only
+  // execute once awaited — starting them above and settling them here is what
+  // makes them concurrent.
+  const [[docAgg], [fieldAgg], queriesPendingReview] = await Promise.all([
+    documentCounts,
+    fieldAccuracy,
+    pendingReviewCount,
+  ]);
+
+  const docs = docAgg ?? { total: 0, validated: 0, failed: 0, awaitingReview: 0 };
+  const fields = fieldAgg ?? { totalFields: 0, overriddenFields: 0, correctedDocuments: 0 };
 
   return {
     // With no extractions yet there is no evidence either way. Reporting 100%

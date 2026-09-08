@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+
+# Secrets — only .env.example is ever committed (PRD §9.10)
+.env
+.env.*
+!.env.example
+
+# Next.js build output
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+next-env.d.ts
+
+# Test & lint caches
+coverage/
+.eslintcache
+playwright-report/
+test-results/
+
+# Private keys
+*.pem
+*.key
+id_rsa
+id_ed25519
+*.p12
+*.pfx
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Vercel
+.vercel
+
+# Agent tooling. `next dev` writes CLAUDE.md on every run as a pointer to
+# AGENTS.md, so it regenerates locally and does not belong in the repository.
+# AGENTS.md itself is kept: its note about Next 16's breaking changes is a real
+# engineering warning, and its name is not tied to any one tool.
+CLAUDE.md

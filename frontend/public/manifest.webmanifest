@@ -1,0 +1,16 @@
+{
+  "name": "GeoMineX",
+  "short_name": "GeoMineX",
+  "description": "Evidence-locked document intelligence and reporting for CMPDI and Coal India subsidiaries.",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#FFFFFF",
+  "theme_color": "#0B1F3A",
+  "lang": "en-IN",
+  "icons": [
+    { "src": "/brand/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/brand/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/brand/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

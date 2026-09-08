@@ -120,6 +120,31 @@ async function start(): Promise<void> {
     }
   });
 
+  /**
+   * Bind failures must be legible.
+   *
+   * Without this, `EADDRINUSE` surfaces as an unhandled rejection — a stack
+   * trace with no statement of the actual problem. That is worth guarding
+   * because of how the failure presents in this repo specifically: `npm run dev`
+   * starts the API and the web app together, so a second copy of the API left
+   * running from an earlier session takes the port, the new one dies in the
+   * noise, and the web app happily proxies every request to the OLD process.
+   * Everything looks up, and requests reach a server the developer is not
+   * watching.
+   */
+  server.on('error', (error: NodeJS.ErrnoException) => {
+    if (error.code === 'EADDRINUSE') {
+      logger.error(
+        `Port ${env.PORT} is already in use — another GeoMineX API is probably still running. ` +
+          `Stop it (or set PORT to something else) and start again. ` +
+          `Requests from the web app will be reaching that other process, not this one.`,
+      );
+      process.exit(1);
+    }
+    logger.error('Server error', { code: error.code, message: error.message });
+    process.exit(1);
+  });
+
   const shutdown = (signal: string) => {
     logger.info(`${signal} received — shutting down`);
     // Stop accepting connections, then close the database once in-flight

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="GeoMineX">
+  <title>GeoMineX</title>
+  <!--
+    Deliberately NOT the badge scaled down.
+
+    At 16px in a real tab strip the badge's globe, satellite and haul truck are
+    indistinguishable mush, so this is a separate drawing built from the only
+    three things that survive: a solid navy field, a white peak silhouette, and
+    two strata bands. Three shapes, maximum contrast, no strokes under 2px.
+
+    Colours are PRD §6 (Primary Dark Blue, Orange Accent) plus the brand ochre.
+  -->
+  <rect width="64" height="64" fill="#0B1F3A"/>
+  <path d="M 4 47 L 21 23 L 30 35 L 42 14 L 60 47 Z" fill="#FFFFFF"/>
+  <rect y="47" width="64" height="8" fill="#F58220"/>
+  <rect y="55" width="64" height="9" fill="#C9862F"/>
+</svg>

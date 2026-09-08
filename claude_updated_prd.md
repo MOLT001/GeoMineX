@@ -3,9 +3,9 @@
 
 | | |
 |---|---|
-| **Document Version** | 1.2 |
+| **Document Version** | 1.3 |
 | **Status** | Draft |
-| **Last Updated** | September 3, 2026 |
+| **Last Updated** | September 6, 2026 |
 | **Prepared For** | CMPDI / Ministry of Coal (MoC) stakeholders |
 | **Tech Stack** | React, Next.js, Node.js + Express, Tailwind CSS, MongoDB |
 
@@ -25,6 +25,18 @@
 > - Also added: per-account lockout, explicit token lifetimes, per-route body-size limits, cached metric aggregation with a UTC-storage rule, cursor pagination for append-heavy lists, four missing error codes, seven missing endpoint families, and CI audit thresholds.
 > - **Artifacts removed:** the `calendarVisibility` reference (§2) left over from the blueprint's scheduling domain add-on, and the "Signup" page name (§3, §5.2) that contradicted the no-self-registration rule in the same document.
 > - **Flagged, not changed:** §9.3 notes that bcrypt for refresh-token hashing — inherited from the blueprint — is the wrong primitive for high-entropy tokens. The decision is the project owner's; the reasoning is on record.
+
+> **v1.3 changelog (pre-frontend reconciliation pass):** The backend is now built — 48 endpoints, 389 tests — and this revision reconciles the document with the system that actually exists, so frontend work builds against a truthful spec. A PRD that still lists a decision as "open" after the code has made it does not describe the product; it describes a fork in the road that was already taken.
+>
+> - **§11.9 resolved — same-site.** Not a preference: `backend/src/config/env.ts` fails the boot when `DEPLOY_TOPOLOGY=cross-site`, because §9.14's CSRF token layer was never implemented. The refine is deliberate and documents itself. Same-site is therefore the only bootable configuration.
+> - **§11.10 resolved — client-side authenticated fetching (Option 1).** Forced by the same code: the refresh cookie is scoped `Path=/api/v1/auth`, so a Next server holding that cookie cannot call `/api/v1/documents` on the user's behalf. Server-proxied fetching would require re-architecting the auth module.
+> - **§11.1 resolved — email OTP.** Built and tested. The magic-link consequence in §5.2 therefore does not apply to login, but **does** still apply to the invite-accept route, which carries its token in the URL.
+> - **Corrected §5.5:** the document implied CIL Users publish reports. The implementation gates publish **and** archive to Admin only — a separation of duties, and the stricter reading. Documentation now follows the code.
+> - **Corrected §5.7 and §7:** both promised streamed AI responses and Socket.IO status events. Neither exists, and neither is a dependency. v1 uses polling with a swappable transport; streaming is recorded as a Phase 2 item rather than an unmet v1 claim.
+> - **New §5.11 — Session Management.** §9.3 requires users to view and revoke their own sessions and §13 makes it an acceptance criterion, but no §5 screen ever owned it. The endpoints exist; the page did not.
+> - **§9.2 now states the upload limit numerically (25 MiB).** §9.2 required "one explicitly documented maximum" and then never documented it.
+> - **§6 Tailwind note corrected:** Tailwind v4 removed `tailwind.config.js`; the palette is now CSS custom properties under `@theme`. The intent — semantic tokens, never hex in components — is unchanged.
+> - **§13 additions** for the frontend obligations that had no criterion: branching the three distinct 401 codes, cursor lists carrying no `total`, rendering 404 as "not found" rather than "forbidden", and verifying CSP on a rendered page rather than a JSON response.
 
 ---
 
@@ -47,6 +59,7 @@ Coal subsidiaries currently handle document review, report drafting, and parliam
 - Public-facing self-service portal (this is an internal/authorized-user system).
 - Mobile native apps (responsive web only in v1).
 - Multi-language UI (English only in v1; can be a Phase 2 add-on).
+- **Dark mode / user-switchable themes.** §6 defines one palette and v1 ships it. A second theme is not a CSS afterthought here: every chart in §5.3 and §5.6 needs its own axis, gridline and series tokens; the §6 yellow status badge inverts its safe text colour on a dark ground; and the WCAG AA contrast rule in §6 — the only accessibility requirement in this document — would have to be re-verified against a second palette that does not yet exist. Revisit as a Phase 2 item with that work costed, not as a styling pass.
 
 ### 1.5 Success Metrics
 | Metric | Target (v1) |
@@ -210,14 +223,17 @@ Pages
 ### 5.5 Report Generation
 - Template picker → auto-drafted report → in-app editor → Publish/Archive controls.
 - Draft/Published/Archived list views with filters (subsidiary, date, template, status).
+- **Role split (v1.3, corrected).** A CIL User creates and edits drafts; **only an Admin can publish or archive.** This is the separation of duties resolved in §11.5 — the drafter and the publisher are deliberately different roles, which is why no separate approval state was added. Earlier revisions implied a CIL User could publish; the implementation never allowed it.
+- **The editor is structured, not rich text.** A report is `sections: [{ heading, body }]`, 1–50 sections, `heading` ≤200 and `body` ≤50 000 characters, both plain strings. There is no HTML in a report body, and none should be introduced — see the rendering rule in §9.13.
 
 ### 5.6 Word Cloud & Topic Analysis
 - Interactive word-cloud visualization with date-range filter.
 - Topic trend chart (line/area) showing frequency over time.
 
 ### 5.7 AI Query & Response
-- Chat-style query box with streamed responses.
-- Every response shows inline source citations (linking to Section 5.8's traceability view).
+- Chat-style query box with **progressive status** (v1.3, corrected — see §11.8). Asking returns `201` with `status: 'queued'` and no answer; the client polls the query's own detail endpoint until it reaches a terminal state (`answered`, `unsupported`, `failed`, `dead_lettered`), showing the intermediate `retrieving` / `answering` states as they arrive. Earlier revisions said "streamed responses"; no streaming transport exists, and the frontend keeps the transport behind a single hook so a Phase 2 SSE upgrade touches one file.
+- Every response shows inline source citations (linking to Section 5.8's traceability view). **Mechanically:** the server rewrites surviving reference markers into `[1]`, `[2]` … inside the answer text and returns the matching metadata in `citations[]` keyed by `ordinal`. The client tokenises on the bracketed number **only** and looks the citation up by ordinal — consistent with §8.1's rule that citation data is never parsed out of model prose. A marker with no matching ordinal renders as inert text.
+- The answer carries an explicit `answerStatus` of `sourced`, `partially_sourced` or `unsupported`; the UI must visually distinguish the three rather than presenting them identically. Server-generated `warnings[]` are already human-readable and are rendered verbatim.
 - Parliamentary Query Log: searchable table of past queries, responder, status, and linked report (if any).
 
 ### 5.8 Data Validation & Traceability
@@ -230,6 +246,11 @@ Pages
 
 ### 5.10 Static Pages
 - About, Contact, Privacy Policy — standard government-portal boilerplate content.
+
+### 5.11 Session Management *(new in v1.3)*
+- **All authenticated roles.** §9.3 requires users to view and revoke their own sessions and §13 makes it an acceptance criterion, but no screen in §5 ever owned it — the endpoints existed with nowhere to surface them.
+- Lists the caller's active sessions with device/IP/last-active metadata, marking the current one, and allows revoking any individually. Never exposes token material.
+- Admin forced-logout of *another* user's sessions is a separate control and belongs in the Admin Panel (§5.9), not here.
 
 ---
 
@@ -248,7 +269,7 @@ Colour palette (SIH-style, as specified):
 | Light Background | `#F3F6F9` |
 
 **Design notes for Tailwind implementation:**
-- Extend `tailwind.config.js` theme colors with the above as semantic tokens (e.g. `primary-dark`, `sih-blue`, `accent-orange`, `accent-yellow`, `surface`, `surface-muted`, `text-default`) rather than hardcoding hex values in components.
+- Define the palette above as **semantic tokens** (e.g. `primary-dark`, `sih-blue`, `accent-orange`, `accent-yellow`, `surface`, `surface-muted`, `text-default`) rather than hardcoding hex values in components. *(v1.3: Tailwind v4 removed `tailwind.config.js` — tokens are now CSS custom properties declared under `@theme` in `globals.css`. The mechanism changed; the rule that components reference token names and never hex did not.)*
 - Use Primary Dark Blue for header/nav and Admin Panel chrome — reinforces the "official/government" feel.
 - Use SIH Blue for primary buttons/links; Orange for key CTAs (e.g. "Generate Report", "Upload"); Yellow sparingly for status/warning badges (e.g. "Pending Validation").
 - Light Background (`#F3F6F9`) for dashboard card backgrounds against the white page background, to create visual hierarchy without heavy borders.
@@ -273,7 +294,7 @@ Colour palette (SIH-style, as specified):
 | File/Doc processing | OCR + extraction service | Separate worker consuming an upload queue; provider abstraction required |
 | AI | AI service abstraction | Retrieval must be authorization-filtered before model invocation; provider-specific SDK/API is isolated behind a service interface |
 | Storage | Object/file storage abstraction | Original uploads and derived artifacts must not be exposed through arbitrary client-controlled URLs |
-| Real-time | Socket.IO or equivalent authorized event channel | Processing status events scoped to authorized users/subsidiaries |
+| Real-time | **None in v1 — client polling** (§11.8) | Document and query status are obtained by polling the resource's detail endpoint to a terminal state. Socket.IO was specified in v1.2 but never implemented and is not a dependency. Deferred to Phase 2, where it must authenticate connections and enforce subsidiary/user room authorization server-side. |
 | Logging | Structured application logging | No passwords, tokens, secrets, or raw sensitive PII |
 | Monitoring | Error monitoring | Production errors captured with sensitive-data scrubbing |
 | API documentation | OpenAPI-compatible endpoint documentation + Postman collection | Keep endpoint contracts synchronized with implementation |
@@ -431,7 +452,7 @@ Given this is a **government-facing system**, security and auditability are firs
 - Apply global and route-specific rate limits, with stricter limits for authentication and AI endpoints. **Public, unauthenticated routes — invite-accept, OTP/magic-link request — carry their own dedicated limits**, since they cannot be rate limited per user.
 - **Request/body size limits are per-route, not global.** A single global limit cannot work here: the blueprint's `10kb` makes document upload impossible, while a limit large enough for scanned PDFs removes the protection from every JSON route. Required:
   - JSON routes: ~`10kb`.
-  - The multipart document-upload route: one explicitly documented maximum, reconciled with the formats accepted in §4.1, enforced at the proxy/web-server layer as well as in the application so an oversized body is rejected before it is buffered.
+  - The multipart document-upload route: **25 MiB (26,214,400 bytes)**, configurable via `MAX_UPLOAD_BYTES`, reconciled with the formats accepted in §4.1, enforced at the proxy/web-server layer as well as in the application so an oversized body is rejected before it is buffered. *(v1.3: the figure was previously described as "one explicitly documented maximum" and then never stated. Every proxy in front of the API must be raised to match — nginx defaults `client_max_body_size` to 1 MB, and a same-site deployment adds the Next.js rewrite as an extra hop that must also pass a 25 MiB body.)*
   - Every other multipart or binary route: no limit inherited by default; each states its own.
 - Protect MongoDB queries from operator injection using appropriate sanitization and strict schema construction.
 - Never build database filters directly from arbitrary client objects.
@@ -864,8 +885,11 @@ This choice determines the shape of every authenticated data-fetching call in th
 
 ## 11. Open Questions & Pre-Build Decisions
 
-1. **Auth flow specifics:** Should "email-only" auth be a magic-link (passwordless), an OTP-over-email flow, or another admin-provisioned passwordless mechanism?
-   - **Recommended engineering direction:** passwordless OTP or magic-link; avoid long-lived user passwords unless a government requirement requires them.
+> **Status as of v1.3.** Seven of these eleven are now **resolved** — most of them by the backend implementation rather than by a separate decision meeting, which is why they are recorded here rather than quietly dropped. A resolved item keeps its original question so the reasoning stays legible; what changed is that the answer is now binding. The four that remain open are §11.2, §11.3, §11.6 and §11.7 — all of them external-provider and hosting questions that no amount of code can settle, and **§11.3 and §11.7 remain blocking for production.**
+
+1. ~~**Auth flow specifics:**~~ **RESOLVED (v1.3) — email OTP.** Should "email-only" auth be a magic-link, an OTP-over-email flow, or another admin-provisioned passwordless mechanism?
+   - **Resolution:** six-to-ten digit numeric OTP over email, TTL `OTP_TTL_MINUTES` (default 10), `OTP_MAX_ATTEMPTS` (default 5) before an `ACCOUNT_LOCK_MINUTES` lockout. Built and tested. `POST /auth/request-code` returns an identical generic 200 whether or not the account exists, so the endpoint cannot be used to enumerate users.
+   - **Consequence for §5.2:** because nothing sensitive enters the URL, the magic-link `history.replaceState` scrub does **not** apply to login. It still applies to `/invite/accept?token=`, which does carry its credential in the query string.
 
 2. **OCR/extraction engine:** In-house model, or a third-party OCR/LLM API?
    - **Required engineering constraint:** use a provider abstraction so the rest of the application does not depend directly on a vendor SDK.
@@ -873,11 +897,12 @@ This choice determines the shape of every authenticated data-fetching call in th
 3. **Hosting/data residency:** Any requirement that data stay within a specific region/data center for compliance?
    - **Blocking decision for production:** confirm before choosing external OCR/AI/storage providers.
 
-4. **MoC Official cross-subsidiary access:** Is this "all subsidiaries by default" or "explicitly granted per subsidiary"?
-   - **Recommended:** explicit grants, matching the subsidiary-isolation model.
+4. ~~**MoC Official cross-subsidiary access:**~~ **RESOLVED (v1.3) — explicit per-subsidiary grants.** Is this "all subsidiaries by default" or "explicitly granted per subsidiary"?
+   - **Resolution:** explicit grants, as recommended. `isUnscoped()` returns true for `admin` **only**; an MoC Official reads exactly the subsidiaries in their `subsidiaryAccess` array. Their read-only character is expressed by exclusion from the write role guards (upload, override, draft, publish), not by a separate rule.
 
-5. **Report publishing approval:** Does Publish require a second-approver step, or is single-user publish sufficient for v1?
-   - **Recommended MVP:** single-user publish only if accepted by the project owner; otherwise implement an approval state before `published`.
+5. ~~**Report publishing approval:**~~ **RESOLVED (v1.3) — no separate approval state; publish is Admin-only.** Does Publish require a second-approver step, or is single-user publish sufficient for v1?
+   - **Resolution:** no `pending_approval` state was added. Instead the separation of duties is enforced by role: a CIL User drafts and edits, and **only an Admin can publish or archive**. That achieves the two-person control the question was reaching for without a fourth lifecycle state, because the drafter and the publisher cannot be the same role.
+   - **This supersedes the implication in §5.5** that a CIL User publishes. See the corrected text there.
 
 6. **File storage provider:** Where will original documents and derived artifacts be stored?
    - **Required engineering constraint:** application code must use a storage abstraction and server-controlled object keys.
@@ -885,17 +910,22 @@ This choice determines the shape of every authenticated data-fetching call in th
 7. **AI/OCR provider data handling:** Are external providers permitted to process government documents?
    - **Blocking decision for production AI/OCR integration:** confirm data-processing, residency, retention, and contractual requirements.
 
-8. **Real-time mechanism:** Confirm Socket.IO versus another server-push mechanism.
-   - **Engineering requirement:** whichever mechanism is chosen must authenticate connections and enforce subsidiary/user room authorization server-side.
+8. ~~**Real-time mechanism:**~~ **RESOLVED (v1.3) — no server push in v1; the client polls.** Confirm Socket.IO versus another server-push mechanism.
+   - **Resolution:** neither Socket.IO nor SSE was implemented, and neither is a dependency. Document and query status are obtained by polling the resource's own detail endpoint until it reaches a terminal state. This is a deliberate v1 scope cut, not an oversight, and it removes the connection-authorization burden the original engineering requirement described.
+   - **Why polling is adequate here:** both pipelines are in-process and typically complete in seconds; `GET` endpoints are exempt from the AI rate limiter, so a 1–2 s poll is cheap; and the alternative would add a second authenticated transport that must independently enforce §9.1 scoping — a meaningful new attack surface for a cosmetic gain.
+   - **Phase 2:** if server push is added, it must authenticate connections and enforce subsidiary/user room authorization server-side, exactly as originally stated. The frontend keeps the transport behind a single hook so the swap touches one file.
 
-9. **Deployment topology — same-site or split-origin?** Will the Next.js frontend and the Express API be served from one origin (Next rewrites proxying `/api/*`), or from separate hosts?
-   - **Blocking decision before the auth module is built.** It determines the refresh cookie's `SameSite` value, the CORS configuration, and whether a CSRF token layer is required at all — see the table in §9.14. Same-site is the simpler and stronger option; split-origin is viable but makes CSRF tokens mandatory rather than optional.
+9. ~~**Deployment topology — same-site or split-origin?**~~ **RESOLVED (v1.3) — same-site.** Will the Next.js frontend and the Express API be served from one origin (Next rewrites proxying `/api/*`), or from separate hosts?
+   - **Resolution: same-site, and the code enforces it.** `config/env.ts` carries a Zod refine that **fails the boot** on `DEPLOY_TOPOLOGY=cross-site`, because §9.14's CSRF token layer — mandatory in that topology — was never implemented. A one-line environment change must not be able to silently remove a security control, so selecting the unsafe topology is a startup crash rather than a quiet downgrade.
+   - **Consequences, now fixed:** refresh cookie stays `SameSite=Strict`; no CSRF token layer exists or is needed; Next.js `rewrites()` proxies `/api/v1/*` to the Express origin so the browser sees a single origin; CORS is a defence-in-depth fallback rather than the load-bearing control.
+   - **To revisit this**, implement the §9.14 CSRF control and delete the refine in the same change — never before it.
 
-10. **Authenticated data fetching under Next.js — client-side or server-proxied?** §9.13 requires the access credential to live in memory only, which server components and SSR cannot read.
-    - **Blocking decision before frontend work begins;** it shapes every authenticated data-fetching call. Options and trade-offs are in §10.5.
+10. ~~**Authenticated data fetching under Next.js — client-side or server-proxied?**~~ **RESOLVED (v1.3) — client-side (Option 1).** §9.13 requires the access credential to live in memory only, which server components and SSR cannot read.
+    - **Resolution: client-side fetching**, and the auth module leaves no real alternative. The refresh cookie is scoped **`Path=/api/v1/auth`**, so the browser attaches it only to auth routes; a Next server holding that cookie cannot call `/api/v1/documents` on the user's behalf. The access token is returned in the JSON body and held in memory, where only the browser can reach it. Option 2 would require re-architecting the auth module, not merely writing the frontend differently.
+    - **Consequences:** public pages (§5.1, §5.10) are server-rendered; every authenticated view is client-rendered; §9.13 is preserved unchanged; and the Next server never becomes a trusted component holding user data, so the shared-cache leak risk that Option 2 carried does not arise.
 
-11. **Refresh-token hashing primitive:** keep the blueprint's bcrypt, or use SHA-256 / HMAC-SHA256 as is standard for high-entropy tokens?
-    - **Recommended:** HMAC-SHA256. See the flagged note in §9.3 for the reasoning — bcrypt truncates past 72 bytes and costs ~100 ms on the system's most-called authenticated endpoint, while its work factor buys nothing against a 256-bit random token.
+11. ~~**Refresh-token hashing primitive:**~~ **RESOLVED (v1.3) — HMAC-SHA256.** Keep the blueprint's bcrypt, or use SHA-256 / HMAC-SHA256 as is standard for high-entropy tokens?
+    - **Resolution:** HMAC-SHA256 keyed on `TOKEN_HASH_SECRET`, implemented in `utils/secureToken.ts`. **bcrypt appears nowhere in the codebase and is not a dependency.** The reasoning in §9.3 stands: bcrypt truncates past 72 bytes and costs ~100 ms on the system's most-called authenticated endpoint, while its work factor buys nothing against a 256-bit random token. The §9.3 "flagged, not changed" note from v1.2 is now discharged.
 
 ---
 
@@ -946,6 +976,17 @@ Before the backend is considered MVP-complete:
 - Dashboard metrics are served from cached aggregations with a visible computed-at timestamp, are subsidiary-scoped, and are not recomputed per request; all timestamps are stored in UTC.
 - Audit-log and document list endpoints support cursor pagination.
 - Irreversible admin actions require confirmation text, and an Admin cannot demote or deactivate themselves.
+
+**Frontend criteria added in v1.3.** Each of these was an obligation the document already implied but never made checkable.
+
+- The client branches all **four** 401 codes distinctly: `UNAUTHORIZED` (bootstrap has not landed — await it and retry, never a logout), `TOKEN_EXPIRED` (refresh and retry once), `TOKEN_INVALID` (attempt one recovery refresh before giving up), and `REFRESH_TOKEN_INVALID` (terminal — re-authenticate). `429` is never treated as a logout.
+- **Concurrent expiry produces exactly one refresh call.** Firing several requests with an expired token shows a single `/auth/refresh` in the network log — more than one is reuse-detection bait that revokes the session family.
+- **A refresh in one browser tab does not sign the user out of another.** Rotation revokes the previous session document and access tokens are bound to it, so the client must share the new credential across tabs rather than let each refresh independently.
+- Cursor-paginated lists are rendered without relying on a `total` — the cursor envelope deliberately omits it, so those views load incrementally rather than showing page numbers.
+- A cross-subsidiary denial is presented to the user as **not found**, never as forbidden or "you lack access to <subsidiary>". A helpful message here reconstructs exactly the resource-existence oracle the 404 convention exists to hide.
+- CSP is verified by inspecting the response headers of an **actual rendered HTML page**, not a JSON endpoint, and the production policy contains no `unsafe-eval` and no `unsafe-inline` in `script-src`.
+- Document previews are fetched as authenticated blobs; no durable object URL, `<iframe src>` or `<embed>` is used to render stored files.
+- Signing out clears the client query cache and cancels in-flight requests, leaving no previous user's data recoverable in the next session on the same browser.
 - `GET /documents/:id/file` enforces role and subsidiary authorization per request and exposes no durable public storage URL.
 - Every endpoint family in §10.2 is documented per §10.4 and exercised for each applicable failure mode in §9.9.
 - `.gitignore` and `.cursorignore` cover the §9.10 deny-list; `git status` lists no `.env` or `node_modules`.

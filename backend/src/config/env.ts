@@ -37,6 +37,22 @@ const envSchema = z
     NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
     PORT: z.coerce.number().int().positive().default(5000),
 
+    /**
+     * Number of reverse-proxy hops in front of this process, for Express's
+     * `trust proxy`. It must equal the real chain length, and the chain grew
+     * when §11.9 resolved to a same-site topology: the Next.js rewrite is now
+     * itself a hop, so a load-balanced deployment is browser → LB → Next →
+     * Express, or 2 — while local development is browser → Next → Express, or 1.
+     *
+     * Getting this wrong is silent and expensive in both directions. Too low and
+     * `req.ip` resolves to the nearest proxy instead of the client: every rate
+     * limiter becomes a single global budget shared by the whole user base, and
+     * every audit row records the proxy's address, quietly emptying the §9.6
+     * compliance trail of the one field that identifies who acted. Too high and
+     * a client can spoof `X-Forwarded-For` to evade rate limiting entirely.
+     */
+    TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(1),
+
     // ── Database ─────────────────────────────────────────────────────────
     MONGODB_URI: z.string().min(1, 'MONGODB_URI is required'),
 

@@ -1,0 +1,648 @@
+@import 'tailwindcss';
+
+/**
+ * PRD §6 — Government Portal Theme.
+ *
+ * Tailwind v4 removed `tailwind.config.js`; the palette lives here as CSS
+ * custom properties under `@theme`. The mechanism changed, the rule did not:
+ * components reference SEMANTIC TOKEN NAMES and never raw hex. A hardcoded
+ * `#1261A0` in a component is the thing this block exists to prevent, because
+ * it is invisible to a later palette change.
+ *
+ * v1 ships one palette. Dark mode is an explicit non-goal (PRD §1.4) — it is
+ * not a styling pass, because every chart needs its own axis/gridline/series
+ * tokens and the §6 contrast rule would need re-verifying against a second
+ * palette that does not exist yet.
+ *
+ * ─── THE VISUAL LANGUAGE, AND WHY IT IS BUILT THIS WAY ──────────────────────
+ * The reference points are India.gov.in, DigiLocker and the UX4G/GIGW
+ * guidance: an official portal reads as official through STRUCTURE, DENSITY
+ * and RESTRAINT, not through decoration. Four decisions follow from that, and
+ * all four are made here rather than in components — which is what lets the
+ * whole product change appearance without a single change to its behaviour:
+ *
+ *   1. The §6 hues are kept EXACTLY as specified. §6 names #0B1F3A and
+ *      #F58220, and a redesign that quietly re-specs the mandated palette is a
+ *      requirements change wearing a design hat. What is added around them is
+ *      a proper ramp — the tints and shades a multi-band government header
+ *      needs — plus neutrals, so nothing has to reach for an arbitrary value.
+ *   2. Corner radii are SMALL. Squarer corners are most of the visual
+ *      difference between a government portal and a consumer SaaS product.
+ *      Redefining Tailwind's own `--radius-*` scale here squares every card,
+ *      button, input and badge at once, without editing a component.
+ *   3. Shadows are nearly absent, and structure comes from 1px rules instead.
+ *      A drop shadow says "floating card"; a rule says "record".
+ *   4. Nothing is decorative that could be structural. No gradients, no glass,
+ *      no glow.
+ * ────────────────────────────────────────────────────────────────────────────
+ */
+@theme {
+  /* ── §6 palette, verbatim. These four are specified; do not re-tune them. ── */
+  --color-primary-dark: #0b1f3a; /* header, nav, Admin Panel chrome */
+  --color-sih-blue: #1261a0; /* primary buttons and links */
+  --color-accent-orange: #f58220; /* key CTAs: Generate Report, Upload */
+  --color-accent-yellow: #fdb813; /* status/warning badges, used sparingly */
+  --color-surface: #ffffff;
+  --color-text-default: #1f2937;
+
+  /**
+   * Card grounds and table headers. Cooled very slightly toward the navy so
+   * the neutrals read as part of the identity rather than as a stock grey —
+   * the difference is invisible in isolation and obvious next to the header.
+   */
+  --color-surface-muted: #f4f7fa;
+
+  /**
+   * The page ground BEHIND the content column. A government portal seats its
+   * content on a tinted field so the white of a record stands out as the
+   * thing being read; a white page on a white card has no hierarchy at all.
+   */
+  --color-canvas: #eef2f7;
+
+  /* ── The navy ramp ──────────────────────────────────────────────────────── */
+
+  /**
+   * Deeper than §6's navy, for the thin utility strip above the masthead.
+   * A government header is not one band, it is three — utility, identity,
+   * navigation — and they have to be separable without rules between them.
+   */
+  --color-primary-deep: #071627;
+
+  /** The navigation band: a step lighter than the masthead it sits under. */
+  --color-primary-mid: #123156;
+
+  /** Hover ground inside the navy bands. */
+  --color-primary-hover: #1b3f6b;
+
+  /* ── The blue ramp ──────────────────────────────────────────────────────── */
+
+  /** Hover/active for primary buttons and links. 7.4:1 on white. */
+  --color-sih-blue-dark: #0d4a7a;
+
+  /** Tint for selected rows, active filter chips and info panels. */
+  --color-sih-blue-tint: #e8f1f8;
+
+  /* ── The national accent ────────────────────────────────────────────────── */
+
+  /**
+   * The tricolour, used ONLY as a 3px rule under the masthead and nowhere else.
+   *
+   * This is the legitimate national reference and is not restricted the way the
+   * State Emblem is: §3 of the State Emblem of India (Prohibition of Improper
+   * Use) Act, 2005 bars a private body from the Lion Capital, which is why the
+   * brand mark crops it out — but the flag's colours carry no such prohibition
+   * and are the standard visual signal of an Indian government digital service.
+   *
+   * Saffron and green are the official flag values (#FF9933 / #138808). They are
+   * decorative only: the rule is `aria-hidden` and nothing encodes meaning in
+   * them, so their contrast is not a factor.
+   */
+  --color-tricolour-saffron: #ff9933;
+  --color-tricolour-green: #138808;
+
+  /* ── Status ─────────────────────────────────────────────────────────────── */
+
+  /**
+   * §6 has no success colour, but document status needs one for `validated`.
+   * Taken from the brand mark's green arc (sampled #006020) so it belongs to
+   * the identity rather than arriving from a component library's defaults.
+   * Measures 7.9:1 on white — clears AA for normal text with room to spare.
+   *
+   * Colour alone never encodes status: every badge pairs this with an icon or
+   * shape, because §6's contrast rule says nothing about colour-blind users.
+   */
+  --color-success: #006020;
+
+  /**
+   * Failure states — `failed` and `dead_lettered` documents, destructive
+   * confirmations. Darkened from a stock red to clear AA on white (5.9:1).
+   */
+  --color-danger: #b3261e;
+
+  /**
+   * A readable amber for warning TEXT. `--color-accent-yellow` is a fill
+   * colour — at 1.7:1 on white it cannot carry type — so anything that has to
+   * be read uses this instead. 4.6:1 on white.
+   */
+  --color-warning-ink: #8a5300;
+
+  /* ── Lines and type ─────────────────────────────────────────────────────── */
+
+  /**
+   * Borders and dividers, a step crisper than before. §6 asks for hierarchy
+   * through surface tone, but a government record wants a visible edge: the
+   * table, the field and the card are all objects with boundaries. Still under
+   * 3:1 on white by design — these are decorative separators, and the ones that
+   * must be perceivable use `--color-border-strong`.
+   */
+  --color-border: #ccd8e6;
+
+  /** Input outlines, table frames, and anything whose EDGE carries meaning. 3.1:1 on white. */
+  --color-border-strong: #93a6bd;
+
+  /**
+   * Muted body text — timestamps, help text, the "computed at" line §13
+   * requires on every dashboard metric. 4.6:1 on white, so it still passes AA
+   * as normal text rather than relying on the large-text exemption.
+   */
+  --color-text-muted: #56637a;
+
+  /** Headings and figures, where the extra weight of near-black is wanted. */
+  --color-text-strong: #101c2e;
+
+  /* ── Typography ─────────────────────────────────────────────────────────── */
+
+  /**
+   * Noto, self-hosted through `next/font` in `app/layout.tsx`.
+   *
+   * Two reasons, and the second is not negotiable. Noto was commissioned to
+   * cover every Indic script, which is the right foundation for a product whose
+   * corpus is Indian technical documentation. And `next/font` downloads the
+   * files at BUILD time and serves them from this origin, so `font-src 'self'`
+   * in the CSP (src/lib/csp.ts) continues to hold — a Google Fonts <link> would
+   * need both `fonts.googleapis.com` in style-src and `fonts.gstatic.com` in
+   * font-src, widening the policy for a typeface.
+   *
+   * The stacks end in the system fallbacks so a failed font load degrades to
+   * something serviceable rather than to Times New Roman.
+   */
+  --font-sans:
+    var(--font-noto-sans), ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+
+  /**
+   * `--font-serif` deliberately resolves to the SAME stack, and the name is
+   * kept only so the ~40 `font-serif` call sites do not have to churn.
+   *
+   * UX4G sets its entire type system in ONE family: `--ux4g-font-family-base`
+   * is `"Noto Sans", system-ui, sans-serif`, and hierarchy is carried by weight
+   * (400/500/600/700), not by a second typeface. A serif/sans pairing was my
+   * own inference about what reads as institutional; it is not what the
+   * government standard actually does, so it is gone. Noto Serif is no longer
+   * downloaded either — two fewer font files on every page load.
+   *
+   * (UX4G does define `Noto Sans Display` — but explicitly reserves it for
+   * 36px and above. Our `font-serif` class is applied at every heading size
+   * including 16px, so using Display here would break their own rule.)
+   */
+  --font-serif:
+    var(--font-noto-sans), ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+
+  /* ── Type scale — UX4G's steps, mapped onto Tailwind's names ────────────── */
+
+  /**
+   * Sizes and line-heights taken from UX4G's shipped stylesheet, not from its
+   * documentation page — the two disagree, and the CSS is what actually
+   * renders. Line-heights are absolute, as UX4G ships them.
+   *
+   * Their rules that shape this: body text has a 16px minimum with a 12px
+   * absolute floor, and body line-height must be at least 1.5x the size
+   * (WCAG 1.4.12). Every step below satisfies both.
+   */
+  --text-xs: 0.75rem; /* 12px — Body/XS: captions, timestamps, legal */
+  --text-xs--line-height: 1.125rem; /* 18px = 1.5 */
+  --text-sm: 0.875rem; /* 14px — Body/S: helper text, dense table cells */
+  --text-sm--line-height: 1.375rem; /* 22px = 1.57 */
+  --text-base: 1rem; /* 16px — Body/M: the default, and UX4G's floor */
+  --text-base--line-height: 1.5rem; /* 24px = 1.5 */
+  --text-lg: 1.125rem; /* 18px — Body/L: instructions, longer copy */
+  --text-lg--line-height: 1.625rem; /* 26px */
+  --text-xl: 1.25rem; /* 20px — Heading/S */
+  --text-xl--line-height: 1.625rem; /* 26px */
+  --text-2xl: 1.5rem; /* 24px — Heading/M: card and panel titles */
+  --text-2xl--line-height: 2rem; /* 32px */
+  --text-3xl: 1.75rem; /* 28px — Heading/L: section headings */
+  --text-3xl--line-height: 2.25rem; /* 36px */
+  --text-4xl: 2rem; /* 32px — Heading/XL: page titles */
+  --text-4xl--line-height: 2.5rem; /* 40px */
+  --text-5xl: 2.5rem; /* 40px — Heading/2XL: the largest we use */
+  --text-5xl--line-height: 3rem; /* 48px */
+
+  /* ── Shape ──────────────────────────────────────────────────────────────── */
+
+  /**
+   * UX4G's radius scale, verbatim: 0 / 2 / 4 / 8 / 12 / 16 / 24 / full.
+   *
+   * This replaces the tighter 2/3/4/6 scale I had invented on the theory that
+   * "squarer reads as government". That theory was mine, not theirs — the
+   * actual standard sits at 4px for controls and 8px for containers, and there
+   * is no reason to be more austere than the body publishing the guidance.
+   *
+   * Still the highest-leverage rule in the file: 39 `rounded-md` and 14
+   * `rounded-lg` usages resolve through these, so the whole product adopts the
+   * government scale without a single component being edited. `rounded-full`
+   * is untouched — a pill badge stays a pill.
+   */
+  --radius-xs: 0.125rem; /* 2px */
+  --radius-sm: 0.25rem; /* 4px  — controls: buttons, inputs, chips */
+  --radius-md: 0.5rem; /* 8px  — containers: cards, panels, tables */
+  --radius-lg: 0.75rem; /* 12px */
+  --radius-xl: 1rem; /* 16px */
+  --radius-2xl: 1.5rem; /* 24px */
+
+  /**
+   * UX4G's five-level elevation scale, verbatim.
+   *
+   * Each level composes a KEY shadow with an AMBIENT one — that pairing is
+   * what makes depth read as light falling on an object rather than as a blur
+   * under a box, and it is why these are not single-shadow values.
+   *
+   * This reverses my earlier position that "a government record is filed, not
+   * floating, so shadows are nearly absent". UX4G's guidance is explicit and
+   * the opposite: Level 1 for resting cards, Level 2 on hover, Levels 3–4
+   * reserved for popovers and modals. At 4% opacity Level 1 is barely visible
+   * anyway — it separates a card from the canvas without pretending to lift it.
+   * Their accompanying rule, "pair elevation with a border", is what this
+   * product already does everywhere.
+   */
+  --elevation-1: rgb(0 0 0 / 0.04);
+  --elevation-2: rgb(0 0 0 / 0.08);
+  --elevation-4: rgb(0 0 0 / 0.16);
+  --elevation-6: rgb(0 0 0 / 0.24);
+
+  --shadow-sm: 0 1px 2px 0 var(--elevation-1), 0 1px 2px 0 var(--elevation-1);
+  --shadow-md: 0 4px 8px 0 var(--elevation-2), 0 1px 2px 0 var(--elevation-1);
+  --shadow-lg: 0 8px 16px 0 var(--elevation-4), 0 4px 8px 0 var(--elevation-2);
+  --shadow-xl: 0 16px 32px 0 var(--elevation-6), 0 8px 16px 0 var(--elevation-4);
+
+  /**
+   * Motion.
+   *
+   * UX4G has no motion tokens at all — confirmed absent from every foundation
+   * page — so these are ours, and deliberately restrained: two durations and
+   * one easing. Nothing in this product moves position, scales or slides;
+   * transitions carry colour and opacity only. The global
+   * `prefers-reduced-motion` block below switches them off entirely.
+   */
+  --ease-standard: cubic-bezier(0.2, 0, 0.2, 1);
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+
+  /**
+   * Z-index, following UX4G's three-tier structure (layout / global / aliases).
+   * Named rather than numeric at call sites so a new overlay cannot silently
+   * outrank the modal.
+   */
+  --z-sticky: 20;
+  --z-header: 30;
+  --z-overlay: 40;
+  --z-modal: 50;
+  --z-skip-link: 100;
+}
+
+:root {
+  color-scheme: light;
+
+  /**
+   * The focus indicator's two tones — the PAIR, not "the ring colour", because
+   * the pairing is the whole mechanism.
+   *
+   * Measured against every ground in the product: on white, canvas,
+   * surface-muted and the tinted table row the outer navy carries it
+   * (>=12.6:1); on primary-deep / dark / mid / hover and the bg-white/10 active
+   * tab the inner white carries it (>=9.68:1); on the knockout fills the two
+   * split the work — white is 6.48:1 on --color-sih-blue, while navy is 7.02:1
+   * on --color-accent-orange where white manages only 2.59:1. The two tones sit
+   * 18.21:1 apart, so the indicator still reads AS a ring on a ground that
+   * swallows one half of it.
+   *
+   * Deliberately NOT in `@theme`: that would mint bg-/text-/border- utilities
+   * for a pair of colours that are never a fill.
+   */
+  --focus-ring: var(--color-primary-deep);
+  --focus-ring-inner: var(--color-surface);
+}
+
+body {
+  background-color: var(--color-canvas);
+  color: var(--color-text-default);
+  font-family: var(--font-sans);
+  /**
+   * 16px / 24px is UX4G's Body/M, and their floor: "minimum body size 16px …
+   * smaller text fails AA for many readers", with line-height at least 1.5x
+   * the size (WCAG 1.4.12). Set on `body` so it is the inherited default and a
+   * screen has to choose something smaller deliberately — 14px remains
+   * available as Body/S for helper text and dense table cells, which is a
+   * legitimate step in their own scale, not a violation of the floor.
+   */
+  font-size: 1rem;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/**
+ * Reading measure. UX4G: "aim for 50–90 characters per line", with a worked
+ * example at max-width 720px. Long-form prose in this product — the About and
+ * Privacy pages, a report body, an AI answer — is the text people actually
+ * read end to end, and an unbounded measure is what makes a wide monitor
+ * hostile to it.
+ */
+.measure {
+  max-width: 68ch;
+}
+
+/**
+ * Headings carry the serif, and it is doing real work.
+ *
+ * The serif/sans pairing is the single strongest signal that a page belongs to
+ * an institution rather than to a product: it is how a gazette, a circular and
+ * an annual report are set. Applied here at the element level so a heading is
+ * correct by default and a screen has to opt OUT rather than remember to opt in.
+ *
+ * ─── IT MUST BE IN `@layer base`, AND THAT IS NOT COSMETIC ──────────────────
+ * Unlayered CSS beats EVERY layered rule regardless of specificity, and Tailwind
+ * v4 puts all utilities in `@layer utilities`. So while this block sat outside a
+ * layer, `color` here silently defeated `text-white` on any heading — and the
+ * three headings in the product that sit on the §6 navy (login, invite accept,
+ * public footer) rendered navy-on-navy: invisible, and a 1:1 contrast failure.
+ * `opt OUT` above is only true if opting out is actually possible.
+ * ────────────────────────────────────────────────────────────────────────────
+ */
+@layer base {
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-sans);
+    /**
+     * 600, because UX4G carries heading hierarchy in WEIGHT rather than in a
+     * second typeface: every Heading step is "600 default / 700 strong".
+     */
+    font-weight: 600;
+    color: var(--color-text-strong);
+    text-wrap: balance;
+    /**
+     * No `letter-spacing`. UX4G defines no tracking token anywhere and states
+     * the rule directly — "don't override letter-spacing into unreadable
+     * values … custom tracking breaks legibility for dyslexic readers". The
+     * -0.01em that used to sit here was a typographic reflex, not a decision,
+     * and it was working against a published accessibility rule.
+     */
+  }
+
+  /**
+   * Devanagari needs more room than Latin at the same size — its ascenders and
+   * descenders collide at the 1.5 that suffices for Latin. UX4G specifies 1.8,
+   * and this product's corpus is Indian technical documentation, so Hindi text
+   * in an extracted figure or a report body is expected, not hypothetical.
+   */
+  :lang(hi),
+  :lang(mr),
+  :lang(ne),
+  :lang(sa) {
+    line-height: 1.8;
+  }
+}
+
+/**
+ * Figures line up in columns.
+ *
+ * Every number in this product sits in a table, a stat tile or a citation
+ * ordinal, and proportional digits make a column of them ragged. This is the
+ * kind of detail that reads as "professionally typeset" without anyone being
+ * able to say why.
+ */
+table,
+[data-numeric],
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/**
+ * The focus ring — still two-tone, and still for the same reason.
+ *
+ * A single colour cannot work across this product, and the numbers are not
+ * close. The §6 blue measures 2.55:1 against --color-primary-dark and 1.49:1
+ * against the active nav tab: a blue-only ring is invisible in the entire
+ * header. The §6 yellow is the mirror image — 1.74:1 on white, which is where
+ * five of every six focusable elements in this product actually live.
+ *
+ * ─── WHY THE GOLD IS GONE ───────────────────────────────────────────────────
+ * This was a 4px YELLOW outline on a 6px navy halo. It was compliant, and it
+ * was also the loudest thing on the screen: a heavy amber slab around whatever
+ * you had just clicked, which reads as a warning rather than as a caret.
+ *
+ * The measurement that settles it: the yellow was never the tone doing the work
+ * on a white card. At 1.74:1 it is barely distinguishable from the page — what
+ * a sighted user was actually seeing there was the 2px navy halo showing
+ * through the outline-offset gap. So the gold was carrying the dark chrome and
+ * nothing else, and the fix is not to recolour it but to promote the tone that
+ * was already doing the job: make the navy the OUTER, thicker band and keep a
+ * light band inside it.
+ *
+ *   0–2px   --focus-ring-inner   drawn by the box-shadow, seen through the gap
+ *   2–5px   --focus-ring        the outline itself
+ *
+ * Total footprint 5px, DOWN from 6px, so nothing that clears an ancestor's
+ * padding today starts clipping tomorrow.
+ *
+ * Which tone gets which role is not arbitrary either: box-shadow is dropped
+ * entirely under forced-colors and is unreliable on display:table-row, so the
+ * half that survives both is the outline — and that is handed to the tone
+ * carrying the light grounds, where most of the product is.
+ *
+ * Unlike the heading rule above, this one is deliberately UNLAYERED, and stays
+ * that way: unlayered CSS outranks every Tailwind utility, so no component can
+ * weaken the focus indicator with an `outline-none` or a `ring-*` of its own.
+ * That is the whole point — an accessibility floor a screen cannot opt out of,
+ * and UX4G says as much: "should not be removed via CSS".
+ */
+:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--focus-ring-inner);
+  /*
+   * NO `border-radius: inherit`, and its absence is a fix rather than an
+   * omission. This rule is UNLAYERED, so that one declaration outranked every
+   * Tailwind `rounded-*` utility and reshaped the element itself while it held
+   * focus: a `rounded-sm` control took its container's radius, so a control
+   * inside a square panel visibly went square the moment you tabbed to it.
+   *
+   * It was there to make the ring follow the element's corners — which the
+   * browser already does, `outline` having followed `border-radius` since
+   * Chrome 94 and Firefox 88. So it bought nothing and cost the radius.
+   */
+}
+
+/**
+ * Under a forced-colours mode the box-shadow half is discarded by the browser,
+ * so the remaining outline is handed to the system's own highlight colour
+ * rather than left as a navy that the user's palette never asked for.
+ */
+@media (forced-colors: active) {
+  :focus-visible {
+    outline-color: Highlight;
+  }
+}
+
+/**
+ * Listbox options opt OUT of the anchor scroll offset.
+ *
+ * Every option carries an `id`, because `aria-activedescendant` has to name
+ * one — which silently opted them into the unlayered `[id]` rule further down
+ * that grants a 5rem scroll-margin so in-page anchors clear the sticky header.
+ * `scrollIntoView({ block: 'nearest' })` honours scroll-margin, so keying down
+ * through a dropdown scrolled its panel 80px further than asked and the caret
+ * walked off the top of its own list.
+ */
+[role='option'] {
+  scroll-margin: 0;
+}
+
+/**
+ * A scroller with no visible scrollbar.
+ *
+ * For the dropdown panel, where the bar was a heavy grey rail pinned down the
+ * right-hand edge of a small floating sheet — it read as a piece of chrome
+ * bolted onto the menu rather than part of it, and it is the loudest thing in
+ * a panel whose whole design is quiet. The wheel, the trackpad, a touch drag
+ * and the arrow keys all still scroll it, and the listbox is keyboard-navigable
+ * regardless, so nothing here is the only route to the content below the fold.
+ *
+ * `@utility` rather than a plain class: Tailwind v4 then places it in the
+ * utilities layer with everything else, so it composes and can be overridden
+ * the way a utility is expected to be.
+ */
+@utility scrollbar-none {
+  /* Firefox. */
+  scrollbar-width: none;
+  /* Chrome, Edge and Safari — this pseudo-element cannot live in a style
+     attribute, which is the reason this is a stylesheet rule at all. */
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/**
+ * The dropdown's active row under forced colours.
+ *
+ * A Windows High Contrast user has every custom background DISCARDED by the
+ * browser, so the `bg-sih-blue-tint` fill and the blue edge that mark the
+ * keyboard caret in a listbox both vanish and the list arrives unmarked — the
+ * one state a listbox cannot do without. The system Highlight colour is the
+ * only thing guaranteed to render here.
+ *
+ * `data-active` is set by ui/Select.tsx on whichever option the caret is on;
+ * `aria-activedescendant` names the same element, so the two never disagree.
+ */
+@media (forced-colors: active) {
+  [role='option'][data-active='true'] {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+}
+
+/**
+ * Skip link — the first thing in the DOM, invisible until focused.
+ *
+ * Every government accessibility standard requires one, and this product has
+ * multi-band headers with up to eight navigation links: without it a keyboard
+ * user pays that cost on every single page load.
+ */
+.skip-link {
+  position: absolute;
+  left: 0.5rem;
+  top: -100%;
+  z-index: var(--z-skip-link);
+  background-color: var(--color-accent-yellow);
+  color: var(--color-primary-deep);
+  padding: 0.75rem 1.25rem;
+  font-weight: 600;
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  transition: top 150ms ease;
+}
+
+.skip-link:focus {
+  top: 0;
+}
+
+::selection {
+  background-color: var(--color-sih-blue);
+  color: #ffffff;
+}
+
+/**
+ * An anchored heading must not land under the sticky masthead.
+ */
+[id] {
+  scroll-margin-top: 5rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/**
+ * Print.
+ *
+ * Included because this is the failure mode of an internal government system:
+ * a report, an audit extract or a citation list gets printed or saved as PDF to
+ * be attached to something, and a navy header band across every page wastes
+ * ink and a nav strip prints as a meaningless list of words. Chrome is dropped,
+ * the ground goes white, and links reveal their targets.
+ */
+@media print {
+  body {
+    background: #ffffff;
+  }
+
+  header nav,
+  footer nav,
+  .no-print {
+    display: none !important;
+  }
+
+  a[href^='http']::after {
+    content: ' (' attr(href) ')';
+    font-size: 0.75em;
+    word-break: break-all;
+  }
+
+  /* A record should not be split across a page break mid-row. */
+  tr,
+  li {
+    break-inside: avoid;
+  }
+}
+
+/**
+ * The navigation drawer's entrance.
+ *
+ * A keyframe animation rather than a transition, because the panel is mounted
+ * only while it is open: a transition from `display:none` needs
+ * `@starting-style` and `transition-behavior: allow-discrete` to run at all,
+ * whereas an animation simply plays on mount. The reduced-motion block above
+ * already reduces both to a single frame.
+ */
+/**
+ * The dropdown panel's entrance.
+ *
+ * 2px, not a slide. A dropdown that travels announces itself as an animation;
+ * this is only enough movement to say the panel arrived from the control rather
+ * than appearing on top of it. `motion-safe:` at the call site makes it
+ * skippable.
+ *
+ * One set of keyframes, not two: a panel that opens upwards used to be placed
+ * with `transform: translateY(-100%)` and therefore needed its own animation to
+ * avoid having that transform overwritten mid-flight. It is now placed by `top`
+ * alone, computed from the panel's real measured height, so both directions
+ * share this.
+ */
+@keyframes dropdown-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+

@@ -41,6 +41,49 @@ jobs:
       - name: Dependency audit
         run: npm audit --audit-level=high
 
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          # Current Active LTS. Re-verify at upgrade time — never pin from a doc.
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install from lockfile
+        run: npm ci
+
+      # Next 16 removed `next lint` and no longer runs ESLint during
+      # `next build`, so this step is the ONLY thing standing between a lint
+      # error and main. Do not fold it into the build.
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      # NEXT_PUBLIC_* are validated by Zod at build time (PRD §7.1), so the
+      # build doubles as the check that the environment contract is satisfiable.
+      # These are placeholder public origins, not secrets.
+      - name: Build
+        run: npm run build
+        env:
+          NEXT_PUBLIC_API_BASE_URL: http://localhost:5000
+          NEXT_PUBLIC_SITE_URL: http://localhost:3000
+
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+
   secret-scan:
     runs-on: ubuntu-latest
     steps:

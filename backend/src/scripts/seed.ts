@@ -14,7 +14,14 @@ import { Subsidiary } from '../modules/subsidiaries/subsidiary.model.js';
 import { ReportTemplate } from '../modules/reports/reportTemplate.model.js';
 import { recordAudit } from '../modules/audit/audit.service.js';
 
-/** Coal India subsidiaries. Adjust to the deployment's actual scope. */
+/**
+ * Coal India's eight subsidiaries. Adjust to the deployment's actual scope.
+ *
+ * The eight are the seven coal-producing companies below plus CMPDI. North
+ * Eastern Coalfields is deliberately absent: it is a unit administered directly
+ * by CIL, not a subsidiary, and listing it here previously displaced CMPDI —
+ * the very organisation this system is built for.
+ */
 const DEFAULT_SUBSIDIARIES = [
   { code: 'ECL', name: 'Eastern Coalfields Limited' },
   { code: 'BCCL', name: 'Bharat Coking Coal Limited' },
@@ -23,7 +30,7 @@ const DEFAULT_SUBSIDIARIES = [
   { code: 'WCL', name: 'Western Coalfields Limited' },
   { code: 'SECL', name: 'South Eastern Coalfields Limited' },
   { code: 'MCL', name: 'Mahanadi Coalfields Limited' },
-  { code: 'NEC', name: 'North Eastern Coalfields' },
+  { code: 'CMPDI', name: 'Central Mine Planning & Design Institute Limited' },
 ];
 
 export interface SeedResult {

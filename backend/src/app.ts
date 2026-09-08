@@ -22,8 +22,11 @@ export function createApp(): Application {
   const app = express();
 
   // Behind a proxy/load balancer, req.ip must reflect the real client or both
-  // rate limiting and audit records attribute everything to the proxy.
-  app.set('trust proxy', 1);
+  // rate limiting and audit records attribute everything to the proxy. The hop
+  // count is configuration, not a constant: §11.9's same-site topology puts the
+  // Next.js rewrite in the chain, so production is typically one hop longer than
+  // local development. See TRUST_PROXY_HOPS in config/env.ts.
+  app.set('trust proxy', env.TRUST_PROXY_HOPS);
   app.disable('x-powered-by');
 
   // ── 1. Security headers ───────────────────────────────────────────────────
