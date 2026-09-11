@@ -60,6 +60,23 @@ export async function setCached(
 }
 
 /**
+ * The only surface invalidation needs: a named collection whose rows record the
+ * scope they were computed over.
+ *
+ * Declared structurally rather than as `Model<CacheRowAttrs>` so that a cache
+ * with its OWN row shape can be invalidated alongside the generic ones.
+ * `MetricsCache` is exactly that — it predates this helper and stores its
+ * figures as flat columns rather than an opaque `payload` — and typing this
+ * parameter to the generic row was the reason it silently could not be
+ * invalidated at all, leaving the dashboard to report stale zeroes for a full
+ * TTL after a document had already been processed.
+ */
+export interface ScopedCacheModel {
+  readonly modelName: string;
+  deleteMany(filter: Record<string, unknown>): PromiseLike<unknown>;
+}
+
+/**
  * Targeted invalidation.
  *
  * Deletes every entry that touches this subsidiary AND the unscoped admin
@@ -72,19 +89,21 @@ export async function setCached(
  * and the query worker on a terminal status.
  */
 export async function invalidateForSubsidiary(
-  models: Model<CacheRowAttrs>[],
+  models: ScopedCacheModel[],
   subsidiaryId: Types.ObjectId,
 ): Promise<void> {
   await Promise.all(
-    models.map((m) =>
-      m
-        .deleteMany({ $or: [{ subsidiaryIds: subsidiaryId }, { subsidiaryIds: { $size: 0 } }] })
-        .catch((err: unknown) => {
-          logger.warn('Cache invalidation failed', {
-            model: m.modelName,
-            message: err instanceof Error ? err.message : String(err),
-          });
-        }),
-    ),
+    models.map(async (m) => {
+      try {
+        await m.deleteMany({
+          $or: [{ subsidiaryIds: subsidiaryId }, { subsidiaryIds: { $size: 0 } }],
+        });
+      } catch (err: unknown) {
+        logger.warn('Cache invalidation failed', {
+          model: m.modelName,
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }),
   );
 }

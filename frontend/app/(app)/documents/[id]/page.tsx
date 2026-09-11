@@ -23,6 +23,8 @@ import {
 } from '@/features/documents/api';
 import { DocumentTextPanel } from '@/features/documents/components/DocumentTextPanel';
 import { ExtractedFieldTable } from '@/features/documents/components/ExtractedFieldTable';
+import { DocumentIntelligencePanel } from '@/features/topics/components/DocumentIntelligencePanel';
+import { RelatedDocuments } from '@/features/topics/components/RelatedDocuments';
 import { ApiError, NOT_FOUND_MESSAGE, userMessage } from '@/lib/api/errors';
 import { formatDateTime, formatRelative } from '@/lib/datetime';
 import { formatBytes } from '@/lib/format';
@@ -65,6 +67,7 @@ const TYPE_LABELS: Record<DocumentType, string> = {
   scan: 'Scan (TIFF)',
   spreadsheet: 'Spreadsheet or text',
   image: 'Image',
+  archive: 'Archive (.zip)',
 };
 
 export default function DocumentDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -295,6 +298,15 @@ export default function DocumentDetailPage({ params }: { params: Promise<{ id: s
           </Section>
 
           <ExtractedFieldTable doc={doc} />
+
+          {/*
+            After the figures and before the raw text — the order a reader
+            needs. The figures are what the document SAYS, this is what it is
+            ABOUT, and the text panel below is the evidence for both.
+          */}
+          <DocumentIntelligencePanel doc={doc} />
+
+          <RelatedDocuments doc={doc} />
 
           <DocumentTextPanel doc={doc} />
         </>

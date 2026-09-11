@@ -11,6 +11,7 @@ import { Card, DescriptionList, PageHeader, ProseText, Section } from '@/compone
 import { InjectionFlag, QueryStatusBadge, ReviewStatusBadge } from '@/components/ui/StatusBadge';
 import { AnswerView } from '@/features/queries/components/AnswerView';
 import { CitationList } from '@/features/queries/components/CitationList';
+import { FollowUpChat } from '@/features/queries/components/FollowUpChat';
 import { ReviewPanel } from '@/features/queries/components/ReviewPanel';
 import { useQueryDetail, type QueryDetail } from '@/features/queries/api';
 // The same bare-id attribution the report screen renders, exported for exactly
@@ -200,6 +201,17 @@ export default function QueryDetailPage() {
           */}
           <Section id="answer" title="Answer">
             <AnswerView key={query.id} query={query} />
+            {/*
+              Inside the SAME section, deliberately: the follow-up conversation
+              is about this answer and belongs with it, not on a screen of its
+              own. It renders nothing until there is an answer to discuss, and
+              nothing at all when no assistant key is configured.
+
+              Keyed on the query id for the same reason `AnswerView` is — moving
+              between two queries must start a new conversation rather than
+              carry one query's exchange onto another's answer.
+            */}
+            <FollowUpChat key={`chat-${query.id}`} query={query} />
           </Section>
 
           {/*

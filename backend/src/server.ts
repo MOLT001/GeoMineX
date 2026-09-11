@@ -2,6 +2,7 @@ import type { Server } from 'node:http';
 import mongoose from 'mongoose';
 import { createApp } from './app.js';
 import { connectDatabase, disconnectDatabase } from './config/db.js';
+import { shutdownOcr } from './services/ocr/scanned.js';
 import { env } from './config/env.js';
 import { logger } from './utils/logger.js';
 import { recoverStuckDocuments } from './modules/documents/document.worker.js';
@@ -150,7 +151,12 @@ async function start(): Promise<void> {
     // Stop accepting connections, then close the database once in-flight
     // requests have drained.
     server.close(() => {
-      void disconnectDatabase().finally(() => process.exit(0));
+      // The OCR worker is a child process holding a 5 MB language model; it
+      // does not die with the parent on every platform, so it is released
+      // explicitly before the database goes.
+      void shutdownOcr()
+        .then(() => disconnectDatabase())
+        .finally(() => process.exit(0));
     });
     // Do not hang forever on a stuck connection.
     setTimeout(() => process.exit(1), 10_000).unref();

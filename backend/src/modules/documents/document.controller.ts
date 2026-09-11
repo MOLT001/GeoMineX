@@ -26,7 +26,10 @@ export async function upload(req: Request, res: Response, next: NextFunction): P
 export async function list(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const result = await service.listDocuments(validatedQuery<ListDocumentsQuery>(res), req.user!);
-    sendCursorPaginated(res, result.data, result.pagination);
+    sendCursorPaginated(res, result.data, {
+      ...result.pagination,
+      ...(result.topicsTruncated ? { topicsTruncated: true } : {}),
+    });
   } catch (err) {
     next(err);
   }
@@ -110,6 +113,48 @@ export async function overrideField(req: Request, res: Response, next: NextFunct
         actor(req),
       ),
     );
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * §4.5 — figures on which two documents in one subsidiary disagree.
+ *
+ * Mounted above `/:id` so the literal path is not read as a document id.
+ */
+export async function conflicts(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const q = validatedQuery<{ subsidiaryId?: string; status?: 'open' | 'acknowledged' | 'resolved'; limit: number }>(res);
+    sendData(res, await service.listConflicts(q, req.user!));
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** §12/§19 — the document's own topics, keywords and summary. */
+export async function topics(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    sendData(res, await service.getDocumentTopics(req.params.id as string, req.user!));
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** §17 — documents sharing this one's subjects. */
+export async function related(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { limit } = validatedQuery<{ limit: number }>(res);
+    sendData(res, await service.listRelatedDocuments(req.params.id as string, req.user!, limit));
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** §19/§21 — re-run the analysis on request. Does not re-read the file. */
+export async function reprocessTopics(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    sendData(res, await service.reprocessTopics(req.params.id as string, req.user!, actor(req)));
   } catch (err) {
     next(err);
   }

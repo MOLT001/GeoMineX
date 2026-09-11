@@ -34,6 +34,20 @@ import { detectInjection, type InjectionFlag } from '../../services/ai/injection
 import { escapePassage } from '../../services/ai/prompt.js';
 import { DocumentModel } from '../documents/document.model.js';
 import { DocumentChunk } from '../documents/documentChunk.model.js';
+import { DocumentTopic } from '../topics/documentTopic.model.js';
+import { MIN_INTENT_CONFIDENCE, classifyQuestion } from '../topics/questionIntent.js';
+
+/**
+ * How much a topic match can move a passage — §10's "additional retrieval
+ * signal", with the emphasis on ADDITIONAL.
+ *
+ * At 0.6 a passage whose document is squarely about the question's subject can
+ * overtake a passage that merely shares more words, which is the whole point.
+ * It cannot overtake one that scored several times higher on the text itself,
+ * which is also the point: the words in the document remain the primary
+ * evidence, and this reorders a shortlist rather than choosing it.
+ */
+const TOPIC_BOOST = 0.6;
 
 export const MAX_SNIPPET_CHARS = 240;
 
@@ -60,6 +74,12 @@ export interface RetrievalResult {
   flags: InjectionFlag[];
   candidatesConsidered: number;
   withheld: number;
+  /**
+   * What the question was read as being about, and whether that was confident
+   * enough to be used. Recorded so an answer's provenance can say that topics
+   * influenced the ordering — and, just as importantly, when they did not.
+   */
+  intent: { topicIds: string[]; matchedTerms: string[]; confidence: number; applied: boolean };
 }
 
 export interface RetrievalInput {
@@ -106,6 +126,56 @@ export async function retrievePassages(input: RetrievalInput): Promise<Retrieval
       : candidates;
 
   const candidatesConsidered = pool.length;
+
+  /**
+   * ── Stage A2: topic re-ranking — §10, §11. ─────────────────────────────
+   *
+   * Runs INSIDE the candidate set that Stage A already produced and already
+   * scoped. It changes the ORDER of `pool`, never its membership: a document
+   * the text search did not find is not retrieved because its topic matched,
+   * and a document outside the caller's scope was never in `pool` to reorder.
+   *
+   * The pinned-document fallback above is deliberately left alone. A user who
+   * named documents asked for those documents, and reordering their opening
+   * chunks by topic would answer a question they did not ask.
+   */
+  const intent = classifyQuestion(input.questionText);
+  const applyIntent = intent.confidence >= MIN_INTENT_CONFIDENCE && pool.length > 1;
+
+  if (applyIntent) {
+    const documentIds = [...new Set(pool.map((c) => String(c.documentId)))].map((id) => new Types.ObjectId(id));
+
+    // Scoped in the SAME query as the topic clause, for the same reason Stage A
+    // is: there must be no code path that reads topic rows first and filters by
+    // subsidiary second.
+    const topicRows = await DocumentTopic.find({
+      documentId: { $in: documentIds },
+      topicId: { $in: intent.topicIds },
+      ...scopeClause,
+      isDeleted: false,
+    })
+      .select({ documentId: 1, relevance: 1 })
+      .lean();
+
+    const boostByDocument = new Map<string, number>();
+    for (const row of topicRows) {
+      const key = String(row.documentId);
+      // A document carrying two of the question's topics keeps the STRONGER
+      // signal rather than summing them: summing would let a document that
+      // mentions three subjects in passing outrank one that is about the topic.
+      boostByDocument.set(key, Math.max(boostByDocument.get(key) ?? 0, row.relevance));
+    }
+
+    if (boostByDocument.size > 0) {
+      const adjusted = (c: (typeof pool)[number]): number => {
+        const base = (c as { score?: number }).score ?? 0;
+        return base * (1 + TOPIC_BOOST * (boostByDocument.get(String(c.documentId)) ?? 0));
+      };
+      // `_id` breaks ties, so the order stays TOTAL — the same property Stage A
+      // relies on, and what keeps an answer reproducible.
+      pool.sort((a, b) => adjusted(b) - adjusted(a) || (String(a._id) < String(b._id) ? -1 : 1));
+    }
+  }
 
   // ── Stage B: per-document cap, deterministic. ───────────────────────────
   const perDoc = new Map<string, number>();
@@ -173,7 +243,19 @@ export async function retrievePassages(input: RetrievalInput): Promise<Retrieval
     });
   }
 
-  return { refs, byRef, flags, candidatesConsidered, withheld };
+  return {
+    refs,
+    byRef,
+    flags,
+    candidatesConsidered,
+    withheld,
+    intent: {
+      topicIds: intent.topicIds,
+      matchedTerms: intent.matchedTerms,
+      confidence: Math.round(intent.confidence * 100) / 100,
+      applied: applyIntent,
+    },
+  };
 }
 
 /** Local mirror of injection.ts#isSuspected, kept inline so the policy is visible here. */

@@ -3,13 +3,15 @@
 
 | | |
 |---|---|
-| **Document Version** | 1.3 |
+| **Document Version** | 1.6 |
 | **Status** | Draft |
-| **Last Updated** | September 6, 2026 |
+| **Last Updated** | September 10, 2026 |
 | **Prepared For** | CMPDI / Ministry of Coal (MoC) stakeholders |
 | **Tech Stack** | React, Next.js, Node.js + Express, Tailwind CSS, MongoDB |
 
 > **Note on scope:** This PRD reflects the sitemap and feature set already mapped out in the project's Mermaid flowchart, the tech stack chosen (MERN + Next.js), and the government-portal colour system captured in the SIH-style palette reference. Dependency version numbers are intentionally omitted — see the "Engineering Standards" section for the version-verification rule this project should follow.
+
+> **v1.6 changelog (Topic & Keyword Intelligence):** §4.3 extended from "word cloud" to a stored, functional topic layer — extraction at ingestion, document filtering, search integration, RAG re-ranking, related documents and dashboard analytics. §5.6 **restored** as a topic explorer, on exactly the condition v1.4 set for it (rank by distinctiveness, not frequency); the word cloud itself remains unshipped and its API remains available. §8.2 gained the two new collections' indexes. New §11.12 records why extraction is deterministic scoring rather than a model call, what that gives up, and the seam a model would slot into.
 
 > **v1.1 changelog (blueprint alignment pass):** Closed six gaps found against the base Full-Stack Project Blueprint — (1) explicit refresh/session token hashing + reuse-detection + revocation in §9.3, (2) user-facing session view/revoke in §9.3, (3) TTL indexes for ephemeral auth artifacts in §8.2, (4) a new Frontend Security subsection (§9.13) covering in-memory token storage, single-flight refresh, and DOMPurify sanitization of AI/document-derived content, (5) an explicit 404-not-403 convention for unauthorized cross-subsidiary access in §9.1, and (6) secure, expiring, single-use invite tokens in §9.3. Corresponding acceptance criteria added to §13. Also removed leftover duplicate draft content that had trailed after the original §14 appendix.
 
@@ -109,9 +111,7 @@ Pages
 ├── Report Generation
 │   ├── Report Templates
 │   └── Generated Reports: Draft / Published / Archived
-├── Word Cloud & Topic Analysis
-│   ├── Visualization View
-│   └── Topic Trends Over Time
+├── Word Cloud & Topic Analysis  (API only — screen withheld, see §5.6)
 ├── AI Query & Response
 │   ├── Chat-style Query Interface
 │   └── Parliamentary Query Log
@@ -145,12 +145,27 @@ Pages
 | Version history | Full version history per report; every edit is attributable and timestamped |
 | Report lifecycle | `Draft → Published → Archived`, with role-gated publish permission |
 
-### 4.3 Word Cloud & Topic Identification
+### 4.3 Topic & Keyword Intelligence — **EXTENDED (v1.6)**
 | Feature | Requirement |
 |---|---|
-| Keyword frequency | Visual word-cloud of most frequent terms across a document set / time range |
+| Topic extraction | Every processed document receives a primary topic, secondary topics, keywords and technical terms, scored at ingestion and stored |
+| Domain awareness | Scoring is weighted by a curated geological/mining taxonomy (~30 concepts, exploration through statutory reporting), and is NOT a raw frequency count |
+| Topic discovery | Distinctive collocations outside the taxonomy are promoted to topics of their own, so the vocabulary is a seed list rather than a ceiling |
+| Topic normalisation | Different wordings of one concept ("reserve estimation", "resource assessment") resolve to one topic; the original wording is retained beside it |
+| Document filtering | `GET /documents?topic=…` filters by one or more topics, unioned or intersected |
+| Search integration | Text search also matches extracted topics and keywords, so a document surfaces for a subject its filename never states |
+| RAG signal | A question's topic re-ranks retrieved passages. It never widens the candidate set, and never becomes evidence |
+| Related documents | Documents sharing a document's subjects, weighted by that document's own topic relevance |
 | Topic clustering | Group related documents/queries into topic clusters |
 | Trend comparison | Compare topic frequency across time periods (e.g. quarter over quarter) |
+
+**Scoring, stated plainly, because "topic extraction" is otherwise ambiguous.**
+Three signals combine, and the second is the one that makes the feature worth
+having: (1) is the term curated mining vocabulary at all; (2) INVERSE DOCUMENT
+FREQUENCY against the subsidiary's own corpus, so a word every filing uses
+carries almost no weight however often it appears; (3) phrase length, because
+`coal seam` is evidence about a document and `coal` is background. Extraction is
+deterministic and offline — see §11.11 for why there is no model call in it.
 
 ### 4.4 AI Query & Response System
 | Feature | Requirement |
@@ -226,9 +241,40 @@ Pages
 - **Role split (v1.3, corrected).** A CIL User creates and edits drafts; **only an Admin can publish or archive.** This is the separation of duties resolved in §11.5 — the drafter and the publisher are deliberately different roles, which is why no separate approval state was added. Earlier revisions implied a CIL User could publish; the implementation never allowed it.
 - **The editor is structured, not rich text.** A report is `sections: [{ heading, body }]`, 1–50 sections, `heading` ≤200 and `body` ≤50 000 characters, both plain strings. There is no HTML in a report body, and none should be introduced — see the rendering rule in §9.13.
 
-### 5.6 Word Cloud & Topic Analysis
-- Interactive word-cloud visualization with date-range filter.
-- Topic trend chart (line/area) showing frequency over time.
+### 5.6 Topics — **RESTORED (v1.6), as a topic explorer rather than a word cloud**
+
+**Status.** The screen ships at `/topics`. The word cloud does not, and the
+distinction is the whole point of this entry.
+
+**What was withheld in v1.4, and why.** The cloud ranked terms by RAW
+FREQUENCY, which on a coal corpus surfaces "coal", "production", "limited" and
+"tonnes" — true, and useless. Clusters were co-occurrence, not meaning.
+Trending a *word's* frequency quarter over quarter answered no question an
+officer actually has: they ask whether production is up, not whether the word
+appeared more often.
+
+**What earned it back.** v1.4 named the condition — "rank by DISTINCTIVENESS
+rather than frequency, TF-IDF or log-odds against the corpus baseline" — and
+§4.3's Topic Intelligence work is that change, plus the domain taxonomy that
+makes the ranking mean something in this corpus specifically. A term is now
+weighted by how characteristic it is of a document rather than by how often it
+appears in one.
+
+**What the screen is.** A counted, sortable list of subjects, each leading to
+the documents that carry it, with the topics it co-occurs with and its most
+recent documents. Two counts per topic, because they differ and the difference
+is informative: documents that MENTION it, and documents whose leading subject
+it is. Plus emerging subjects — topics appearing in more documents over the last
+90 days than the 90 before, reported as a count difference and never as a
+percentage against a previous zero.
+
+**The word cloud stays unshipped, deliberately.** The controlling requirement is
+that it is optional: a cloud is a less precise rendering of the same list, with
+no click target, no ordering a reader can rely on, and a size channel that
+carries one number badly. The `GET /topics` word-cloud API remains available and
+`termIndexer.ts` keeps materialising term rows, so nothing prevents a later
+restore — and the term rows are what the distinctiveness baseline is computed
+from, so they now have a second, load-bearing consumer.
 
 ### 5.7 AI Query & Response
 - Chat-style query box with **progressive status** (v1.3, corrected — see §11.8). Asking returns `201` with `status: 'queued'` and no answer; the client polls the query's own detail endpoint until it reaches a terminal state (`answered`, `unsupported`, `failed`, `dead_lettered`), showing the intermediate `retrieving` / `answering` states as they arrive. Earlier revisions said "streamed responses"; no streaming transport exists, and the frontend keeps the transport behind a single hook so a Phase 2 SSE upgrade touches one file.
@@ -408,6 +454,8 @@ Indexes must support the application's actual query patterns and should not weak
 - `queries.questionText` (and `responseText` where response search is required)
 - `documents.originalFilename` + `documents.tags`
 - `documentChunks.text` — supports both keyword search and the §4.3 word-cloud/topic term extraction
+- `documentTopics.{subsidiaryId, topicId, documentCreatedAt}` — the §4.3 topic filter and topic explorer; `{documentId, score}` for a document's own topics; a unique `{documentId, topicId}` as the idempotency backstop
+- `documentIntelligence.{subsidiaryId, extractionVersion}` — finding documents whose analysis predates a scoring change (§4.3)
 
 Text indexes must cover **non-sensitive fields only**. Specifically excluded: `extractedFields.value` (may contain sensitive operational figures), `auditLogs.metadata`, and any field holding credential or token material. Audit-trail search (§4.5) is served by the compound indexes above — filtering by user, subsidiary, date, and action type — not by full-text search over log payloads.
 
@@ -885,7 +933,9 @@ This choice determines the shape of every authenticated data-fetching call in th
 
 ## 11. Open Questions & Pre-Build Decisions
 
-> **Status as of v1.3.** Seven of these eleven are now **resolved** — most of them by the backend implementation rather than by a separate decision meeting, which is why they are recorded here rather than quietly dropped. A resolved item keeps its original question so the reasoning stays legible; what changed is that the answer is now binding. The four that remain open are §11.2, §11.3, §11.6 and §11.7 — all of them external-provider and hosting questions that no amount of code can settle, and **§11.3 and §11.7 remain blocking for production.**
+> **Status as of v1.5.** Eight of these eleven are now **resolved** — most of them by the backend implementation rather than by a separate decision meeting, which is why they are recorded here rather than quietly dropped. A resolved item keeps its original question so the reasoning stays legible; what changed is that the answer is now binding.
+>
+> **§11.7 was resolved by decision on 9 September 2026: external providers ARE permitted to process government documents.** That unblocked Google Cloud Vision as the primary OCR engine. The three that remain open are §11.2, §11.3 and §11.6 — and **§11.3 (data residency) is now the only blocker for production**, because it is the one constraint that survives §11.7's answer: permission to send a document to a vendor is not permission to send it to any region.
 
 1. ~~**Auth flow specifics:**~~ **RESOLVED (v1.3) — email OTP.** Should "email-only" auth be a magic-link, an OTP-over-email flow, or another admin-provisioned passwordless mechanism?
    - **Resolution:** six-to-ten digit numeric OTP over email, TTL `OTP_TTL_MINUTES` (default 10), `OTP_MAX_ATTEMPTS` (default 5) before an `ACCOUNT_LOCK_MINUTES` lockout. Built and tested. `POST /auth/request-code` returns an identical generic 200 whether or not the account exists, so the endpoint cannot be used to enumerate users.
@@ -907,8 +957,15 @@ This choice determines the shape of every authenticated data-fetching call in th
 6. **File storage provider:** Where will original documents and derived artifacts be stored?
    - **Required engineering constraint:** application code must use a storage abstraction and server-controlled object keys.
 
-7. **AI/OCR provider data handling:** Are external providers permitted to process government documents?
-   - **Blocking decision for production AI/OCR integration:** confirm data-processing, residency, retention, and contractual requirements.
+7. ~~**AI/OCR provider data handling:**~~ **RESOLVED (v1.5) — YES, permitted.** Are external providers permitted to process government documents?
+   - **Resolution:** external providers **may** process documents from this corpus. Pages, extracted text and figures may be sent to a third-party OCR or model service. This was the last blocker on OCR quality, and it is now closed by decision rather than by code.
+   - **Consequence — permitted, but NOT ADOPTED.** The permission is real and stands; the integration built on it is dormant. `services/ocr/googleVision.ts` implements Vision's `DOCUMENT_TEXT_DETECTION` and is wired to run first *when credentials are present*, but no credentials are configured and none are planned: Google Cloud Vision requires a billing account with a standing autopay mandate (₹15,000 at signup), which is not a commitment this project will make for a demo. **Tesseract, offline, is the engine in production use.**
+   - **This is the distinction that matters.** §11.7 asked a POLICY question and the answer is yes. What stopped Vision was COMMERCIAL, not regulatory. Recording it that way keeps the decision reusable: if a funded deployment later wants Vision, it is one environment variable and no code, and §11.7 no longer needs revisiting. If instead the offline engine is to remain, §11.7 simply goes unused.
+   - **Consequence for accuracy.** With Tesseract as the only engine, scanned figures stay capped below the review threshold and are always flagged for a human — see `OCR_CONFIDENCE_CEILING`. That is not a temporary state pending Vision; it is the honest grading for the engine actually reading the page.
+   - **What this decision does NOT waive.** Three things stay true and are not covered by "permitted":
+     - **§11.3 (data residency) is still open** and is now the binding constraint. Vision processes in the region its endpoint serves; if a residency requirement lands later, that is a deployment change, not a code change — which is why the endpoint host is configurable.
+     - **Confidence still reflects the reading, not the vendor.** A figure recovered from pixels stays capped below a figure parsed from a text layer, because a misread digit in a tonnage is invisible downstream whichever engine misread it.
+     - **The provider abstraction stands (§11.2's constraint).** Vision is an adapter behind the same `OcrProvider` seam; no vendor type reaches the rest of the application.
 
 8. ~~**Real-time mechanism:**~~ **RESOLVED (v1.3) — no server push in v1; the client polls.** Confirm Socket.IO versus another server-push mechanism.
    - **Resolution:** neither Socket.IO nor SSE was implemented, and neither is a dependency. Document and query status are obtained by polling the resource's own detail endpoint until it reaches a terminal state. This is a deliberate v1 scope cut, not an oversight, and it removes the connection-authorization burden the original engineering requirement described.
@@ -926,6 +983,14 @@ This choice determines the shape of every authenticated data-fetching call in th
 
 11. ~~**Refresh-token hashing primitive:**~~ **RESOLVED (v1.3) — HMAC-SHA256.** Keep the blueprint's bcrypt, or use SHA-256 / HMAC-SHA256 as is standard for high-entropy tokens?
     - **Resolution:** HMAC-SHA256 keyed on `TOKEN_HASH_SECRET`, implemented in `utils/secureToken.ts`. **bcrypt appears nowhere in the codebase and is not a dependency.** The reasoning in §9.3 stands: bcrypt truncates past 72 bytes and costs ~100 ms on the system's most-called authenticated endpoint, while its work factor buys nothing against a 256-bit random token. The §9.3 "flagged, not changed" note from v1.2 is now discharged.
+
+12. **Where topic extraction gets its intelligence — model or scoring?** **RESOLVED (v1.6) — deterministic scoring, with a seam for a model.**
+    - **The constraint that decided it.** There is no LLM in the backend, and adding one was not available. `services/ai/local.adapter.ts` is EXTRACTIVE by design — it selects sentences verbatim and never writes one, which is what makes every citation exact by construction. The only model access in the product is a browser-held Gemini key on a free tier of **20 requests per day per model**, which cannot analyse a corpus of thousands of documents and which §9.13 forbids moving server-side without new credentials.
+    - **Why that is not a downgrade for this feature.** The failure mode topic extraction has to avoid — surfacing the most frequent words — is a SCORING failure, and it is fixed by scoring whoever does it. Domain weighting decides what counts as mining vocabulary; inverse document frequency against the subsidiary's own corpus decides what is characteristic rather than merely common; phrase length separates `coal seam` from `coal`. Measured on a real CIL quarterly filing, the result is a primary topic of Financial Performance with `revenue from operations`, `profit before tax` and `earnings per share` as its technical terms.
+    - **What is genuinely given up.** Two things, and neither is disguised. A synonym pair the taxonomy does not list and that never co-occurs will not merge. And "semantic similarity" in related-document discovery is topic OVERLAP — there is no embedding model, and the UI says overlap rather than similarity for that reason.
+    - **The seam.** `extractTopics()` in `topicExtraction.ts` returns the shape the rest of the system consumes. A model that filled the same structure would drop in behind it and nothing downstream would change. That is the upgrade path if backend model access is ever funded.
+    - **Consequence for the UI label.** The panel is titled **"Document intelligence"**, not "AI Document Intelligence" as the feature request worded it. No model runs behind it, so the "AI" prefix is a claim the screen cannot support — and in front of a Ministry of Coal audience it invites a question whose honest answer is the stronger one anyway. The panel states that answer instead: *"Analysed on this server — no document text is sent to an external service."* Do not restore the prefix without first putting a model behind the seam.
+    - **Consequence for §11.3.** This feature adds no new vendor and sends nothing outside the deployment, so it does not touch the open data-residency question.
 
 ---
 

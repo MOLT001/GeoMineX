@@ -105,6 +105,22 @@ export interface QueryAttrs {
   candidatesConsidered: number;
   passagesUsed: number;
   passagesWithheld: number;
+  /**
+   * §4.5 — metrics on which the CITED documents disagree with each other.
+   *
+   * Recorded on the query, not derived at read time, because it is a fact about
+   * the corpus AS IT WAS when the answer was produced. A conflict resolved
+   * afterwards must not silently erase the warning that was shown to whoever
+   * read this answer.
+   */
+  conflictingMetrics: Array<{
+    metricLabel: string;
+    readings: Array<{ originalFilename: string; value: string }>;
+    /** Why it was attached: the question named the metric, or the answer quotes a disputed figure. */
+    reason?: 'asked' | 'quoted';
+    /** The figure the answer states, when `reason` is `quoted`. */
+    quoted?: string;
+  }>;
   discardedCitationCount: number;
   injectionFlags: QueryInjectionFlag[];
   injectionSuspected: boolean;
@@ -172,6 +188,29 @@ const querySchema = new Schema<QueryAttrs>(
     candidatesConsidered: { type: Number, required: true, default: 0 },
     passagesUsed: { type: Number, required: true, default: 0 },
     passagesWithheld: { type: Number, required: true, default: 0 },
+    conflictingMetrics: {
+      type: [
+        new Schema(
+          {
+            metricLabel: { type: String, required: true },
+            reason: { type: String, enum: ['asked', 'quoted'], default: 'asked' },
+            quoted: { type: String },
+            readings: {
+              type: [
+                new Schema(
+                  { originalFilename: { type: String, required: true }, value: { type: String, required: true } },
+                  { _id: false },
+                ),
+              ],
+              required: true,
+            },
+          },
+          { _id: false },
+        ),
+      ],
+      required: true,
+      default: [],
+    },
     discardedCitationCount: { type: Number, required: true, default: 0 },
     injectionFlags: [
       {

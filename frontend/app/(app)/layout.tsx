@@ -6,7 +6,6 @@ import { RequireAuth } from '@/components/AuthGate';
 import { useAuth } from '@/auth/AuthProvider';
 import { Sidebar, type NavItem } from '@/components/Sidebar';
 import {
-  BarChartIcon,
   ChatIcon,
   ClipboardIcon,
   FileTextIcon,
@@ -67,10 +66,11 @@ import { Tricolour } from '@/components/brand/Tricolour';
 const NAV: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: <GridIcon size={20} strokeWidth={2.4} /> },
   { href: '/documents', label: 'Documents', icon: <FileTextIcon size={20} strokeWidth={2.4} /> },
+  // Directly under Documents: it is a second way into the same collection —
+  // by subject rather than by file — and the pair reads as one idea there.
+  { href: '/topics', label: 'Topics', icon: <TagIcon size={20} strokeWidth={2.4} /> },
   { href: '/reports', label: 'Reports', icon: <ClipboardIcon size={20} strokeWidth={2.4} /> },
   { href: '/queries', label: 'Queries', icon: <ChatIcon size={20} strokeWidth={2.4} /> },
-  { href: '/topics', label: 'Topics', icon: <TagIcon size={20} strokeWidth={2.4} /> },
-  { href: '/analytics', label: 'Analytics', icon: <BarChartIcon size={20} strokeWidth={2.4} /> },
   { href: '/audit', label: 'Audit', icon: <ShieldIcon size={20} strokeWidth={2.4} /> },
   { href: '/admin/users', label: 'Admin', icon: <UsersIcon size={20} strokeWidth={2.4} />, adminOnly: true },
 ];

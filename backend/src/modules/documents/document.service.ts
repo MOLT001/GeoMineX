@@ -13,11 +13,23 @@ import { ApiError } from '../../utils/apiError.js';
 import { logger } from '../../utils/logger.js';
 import { assertSubsidiaryAccess, isUnscoped, type AuthContext } from '../../utils/authorization.js';
 import { invalidateForSubsidiary } from '../../utils/aggregateCache.js';
+import { MetricsCache } from '../dashboard/metricsCache.model.js';
 import { getStorage, buildStorageKey } from '../../services/storage/index.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { Subsidiary } from '../subsidiaries/subsidiary.model.js';
 import { TopicCache } from '../topics/topicCache.model.js';
 import { AnalyticsCache } from '../analytics/analyticsCache.model.js';
+import { resolveScope, scopeMatch } from '../../utils/scopeKey.js';
+import { DocumentConflict, type ConflictStatus } from './documentConflict.model.js';
+import { DocumentIntelligence } from '../topics/documentIntelligence.model.js';
+import {
+  assertKnownTopicIds,
+  getDocumentIntelligence,
+  getRelatedDocuments,
+  resolveSearchTopicDocuments,
+  resolveTopicFilter,
+} from '../topics/topicIntelligence.service.js';
+import { reprocessDocumentTopics } from '../topics/topicIndexer.js';
 import { DocumentModel } from './document.model.js';
 import { DocumentChunk } from './documentChunk.model.js';
 import { ExtractedField } from './extractedField.model.js';
@@ -149,6 +161,14 @@ export async function uploadDocument(
     enqueueDocument(String(doc._id));
     logger.info('Document queued for processing', { documentId: String(doc._id) });
 
+    /**
+     * `documentsTotal` has already changed, so the landing figures are stale
+     * the moment this row exists — before the worker has touched it. Only the
+     * metrics cache: the topic and analytics views are computed from
+     * `validated` documents and a queued one changes neither.
+     */
+    void invalidateForSubsidiary([MetricsCache], doc.subsidiaryId);
+
     return present(doc);
   } catch (err) {
     // Do not leave an orphaned object behind if the metadata write fails.
@@ -185,8 +205,65 @@ export async function listDocuments(
   // different queue from "documents the OCR was unsure about", and a reviewer
   // triaging the first should not have to wade through the second.
   if (query.injectionSuspected) filter.injectionSuspected = query.injectionSuspected === 'true';
-  if (query.q) filter.$text = { $search: query.q };
-  if (query.cursor) filter._id = { $lt: new Types.ObjectId(query.cursor) };
+
+  // Scope is resolved once and reused by both topic paths below. It re-runs the
+  // same grant check `scopeClause` already made, which is deliberate: neither
+  // helper may depend on the other having been called.
+  const scope = resolveScope(user, query.subsidiaryId);
+  let topicsTruncated = false;
+
+  // ── §8: filter by topic ──────────────────────────────────────────────────
+  if (query.topic && query.topic.length > 0) {
+    assertKnownTopicIds(query.topic);
+    const resolved = await resolveTopicFilter(query.topic, query.topicMatch === 'all', scope);
+    topicsTruncated = resolved.truncated;
+    // No matches means an empty page, not an unfiltered one. Leaving `$in: []`
+    // to the database would work, but returning early makes it impossible for a
+    // later edit to drop the clause and quietly serve the whole corpus.
+    if (resolved.documentIds.length === 0) {
+      return { data: [], pagination: { nextCursor: null, limit: query.limit }, topicsTruncated };
+    }
+    filter._id = { $in: resolved.documentIds };
+  }
+
+  // ── §9: search considers topics and keywords, not just the filename ──────
+  let topicMatchIds = new Set<string>();
+  let searchTerms: string[] = [];
+
+  if (query.q) {
+    searchTerms = query.q
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((t) => t.length >= 3)
+      .slice(0, 6);
+
+    const viaTopics = searchTerms.length ? await resolveSearchTopicDocuments(searchTerms, scope) : [];
+    topicMatchIds = new Set(viaTopics.map(String));
+
+    if (viaTopics.length > 0) {
+      /**
+       * `$text` inside `$or` is legal only when every other clause is indexed,
+       * which `_id` always is. That constraint is why this widens through `_id`
+       * rather than through a second text predicate.
+       *
+       * The ORDER of results is deliberately unchanged — still newest-first,
+       * still cursor-paginated. Re-ranking by relevance would mean abandoning
+       * the cursor contract this endpoint publishes (§9.8), and the win §9 is
+       * really asking for is that the right documents are IN the set at all:
+       * a report called "Annual Geological Investigation" now answers a search
+       * for `drilling`. `matchedVia` tells the client why each row is here.
+       */
+      filter.$or = [{ $text: { $search: query.q } }, { _id: { $in: viaTopics } }];
+    } else {
+      filter.$text = { $search: query.q };
+    }
+  }
+
+  if (query.cursor) {
+    // Merged, not assigned: a topic filter may already have put an `$in` here,
+    // and overwriting it would silently drop the filter on page two.
+    filter._id = { ...(filter._id ?? {}), $lt: new Types.ObjectId(query.cursor) };
+  }
 
   const rows = await DocumentModel.find(filter)
     .sort({ _id: -1 })
@@ -196,12 +273,40 @@ export async function listDocuments(
   const hasMore = rows.length > query.limit;
   const page = hasMore ? rows.slice(0, query.limit) : rows;
 
+  // One lookup for the whole page: the list shows each document's leading
+  // topic, which is the difference between a filename list and a catalogue.
+  const intelligence = page.length
+    ? await DocumentIntelligence.find({ documentId: { $in: page.map((d) => d._id) } })
+        .select({ documentId: 1, primaryTopicId: 1, primaryTopicLabel: 1, status: 1, confidence: 1 })
+        .lean()
+    : [];
+  const intelligenceById = new Map(intelligence.map((i) => [String(i.documentId), i]));
+
   return {
-    data: page.map(present),
+    data: page.map((doc) => {
+      const info = intelligenceById.get(String(doc._id));
+      return {
+        ...present(doc),
+        primaryTopic: info?.primaryTopicId
+          ? { topicId: info.primaryTopicId, label: info.primaryTopicLabel ?? info.primaryTopicId }
+          : null,
+        topicStatus: info?.status ?? 'pending',
+        ...(query.q
+          ? {
+              matchedVia: [
+                ...(searchTerms.some((t) => doc.originalFilename.toLowerCase().includes(t)) ? ['filename'] : []),
+                ...(topicMatchIds.has(String(doc._id)) ? ['topic'] : []),
+              ],
+            }
+          : {}),
+      };
+    }),
     pagination: {
       nextCursor: hasMore && page.length > 0 ? String(page[page.length - 1]!._id) : null,
       limit: query.limit,
     },
+    /** True when a topic filter matched more documents than it would resolve. */
+    topicsTruncated,
   };
 }
 
@@ -279,8 +384,19 @@ export async function getDocumentChunks(documentId: string, user: AuthContext) {
 
 export async function getExtractedFields(documentId: string, user: AuthContext) {
   const doc = await findScoped(documentId, user);
+  /**
+   * DOCUMENT order, not alphabetical.
+   *
+   * `_id` is monotonic, so this is insertion order, which for the extractor is
+   * reading order down the page. That matters for a table: a results statement
+   * argues from revenue to total income to expenses to profit, and sorting by
+   * name scatters that into an alphabetical list where `Changes in inventories`
+   * leads and revenue sits under R between two unrelated rows. It also keeps the
+   * four figures of one measure adjacent, which is what lets the document view
+   * lay them back out as the columns the filing prints.
+   */
   const fields = await ExtractedField.find({ documentId: doc._id, isDeleted: false })
-    .sort({ fieldName: 1 })
+    .sort({ _id: 1 })
     .lean();
 
   return fields.map((f) => ({
@@ -378,7 +494,7 @@ export async function overrideExtractedField(
 
   // An override changes the extraction-accuracy figure, so a series computed
   // under the old value must go (§4.6).
-  void invalidateForSubsidiary([TopicCache, AnalyticsCache], field.subsidiaryId);
+  void invalidateForSubsidiary([TopicCache, AnalyticsCache, MetricsCache], field.subsidiaryId);
 
   return {
     id: String(field._id),
@@ -387,5 +503,120 @@ export async function overrideExtractedField(
     originalValue: field.originalValue,
     overrideReason: field.overrideReason,
     overriddenAt: field.overriddenAt,
+  };
+}
+
+// ── Topic Intelligence, per document ───────────────────────────────────────
+
+/**
+ * §12/§19 — one document's topics, keywords, technical terms and summary.
+ *
+ * Access is proved by `findScoped` before anything else is read, so the
+ * intelligence collections are never queried on behalf of a caller who cannot
+ * see the document they describe.
+ */
+export async function getDocumentTopics(documentId: string, user: AuthContext) {
+  const doc = await findScoped(documentId, user);
+  return getDocumentIntelligence(doc._id);
+}
+
+/**
+ * §17 — historical documents that share this one's subjects.
+ *
+ * Scoped twice over: `findScoped` proves the caller may see the SOURCE
+ * document, and the scope resolved from the caller's own grants filters the
+ * candidates. The source document's subsidiary is deliberately not used to
+ * widen that — a document a user can read must not become a lens onto a
+ * subsidiary they cannot.
+ */
+export async function listRelatedDocuments(documentId: string, user: AuthContext, limit: number) {
+  const doc = await findScoped(documentId, user);
+  const related = await getRelatedDocuments(doc._id, resolveScope(user), limit);
+  return { documentId: String(doc._id), related };
+}
+
+/**
+ * §19/§21 — re-run topic extraction for one document, on request.
+ *
+ * The other three reasons to reprocess (§21) are automatic: a fresh ingestion,
+ * a retry, and a version bump handled by the backfill script. This is the
+ * manual one, for a document whose analysis a reviewer disagrees with — so it
+ * is restricted to the roles that may already correct extracted figures, and it
+ * is audited like any other correction.
+ *
+ * It does NOT re-read the file or re-run OCR. `POST /documents/:id/retry` is
+ * the action for that, and conflating them would let a cheap request schedule
+ * an expensive one.
+ */
+export async function reprocessTopics(documentId: string, user: AuthContext, meta: ActorMeta) {
+  const doc = await findScoped(documentId, user);
+
+  if (doc.status !== 'validated') {
+    throw ApiError.invalidRequest('Topics can only be re-extracted from a document that has been processed');
+  }
+
+  const outcome = await reprocessDocumentTopics(doc._id);
+
+  await recordAudit({
+    action: 'document.topics_reprocessed',
+    userId: user.id,
+    targetType: 'Document',
+    targetId: documentId,
+    subsidiaryId: String(doc.subsidiaryId),
+    // Counts and a label — the same discipline the ingestion audit follows.
+    metadata: {
+      status: outcome.status,
+      topicsExtracted: outcome.topicCount,
+      primaryTopic: outcome.primaryTopic,
+    },
+    ipAddress: meta.ipAddress,
+  });
+
+  // The catalogue, the analytics panel and the word cloud were all computed
+  // over the topics this call just replaced.
+  void invalidateForSubsidiary([TopicCache, AnalyticsCache], doc.subsidiaryId);
+
+  return { ...outcome, ...(await getDocumentIntelligence(doc._id)) };
+}
+
+// ── Conflicting figures across documents (§4.5) ────────────────────────────
+
+/**
+ * The conflict review queue, widest disagreement first.
+ *
+ * Scoped like every other read: the caller sees only conflicts inside the
+ * subsidiaries they hold, and a conflict is a property of one subsidiary by
+ * construction — the detector never compares across them.
+ */
+export async function listConflicts(
+  query: { subsidiaryId?: string; status?: ConflictStatus; limit: number },
+  user: AuthContext,
+) {
+  const scope = resolveScope(user, query.subsidiaryId);
+
+  const rows = await DocumentConflict.find(
+    scopeMatch(scope, { status: query.status ?? 'open', isDeleted: false }),
+  )
+    .sort({ spread: -1, detectedAt: -1 })
+    .limit(query.limit)
+    .lean();
+
+  return {
+    conflicts: rows.map((c) => ({
+      id: String(c._id),
+      subsidiaryId: String(c.subsidiaryId),
+      metric: c.metricLabel,
+      status: c.status,
+      // The absolute gap, so a reviewer can triage by how much is at stake.
+      spread: c.spread,
+      detectedAt: c.detectedAt.toISOString(),
+      readings: c.readings.map((r) => ({
+        documentId: String(r.documentId),
+        originalFilename: r.originalFilename,
+        value: r.value,
+        section: r.section ?? null,
+        documentDate: r.documentCreatedAt.toISOString(),
+      })),
+    })),
   };
 }

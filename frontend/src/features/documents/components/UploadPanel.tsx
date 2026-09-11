@@ -197,7 +197,7 @@ export function UploadPanel() {
             </label>
           </p>
           <p className="text-xs text-text-muted">
-            PDF, image, .tif scan, .xlsx, .csv or .txt · up to {formatBytes(MAX_UPLOAD_BYTES)}
+            PDF, scan, image, .xlsx, .csv, .txt or a .zip of them · up to {formatBytes(MAX_UPLOAD_BYTES)}
           </p>
         </div>
 

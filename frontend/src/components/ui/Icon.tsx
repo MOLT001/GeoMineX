@@ -121,13 +121,13 @@ export function ChatIcon(props: IconProps) {
   );
 }
 
-/** Topics — what the corpus is about. */
-export function TagIcon(props: IconProps) {
+/** An archive — a box of other documents. */
+export function ArchiveIcon(props: IconProps) {
   return (
     <svg {...svgProps(props)}>
       <Titled title={props.title} />
-      <path d="M20.5 13.5 13 21a2 2 0 0 1-2.8 0l-7-7A2 2 0 0 1 2.6 12.6L3 5a2 2 0 0 1 2-2l7.6-.4a2 2 0 0 1 1.5.6l6.4 6.4a2 2 0 0 1 0 2.9Z" />
-      <circle cx="8" cy="8" r="1.4" />
+      <path d="M3 7h18v3H3zM4.5 10v9.5h15V10" />
+      <path d="M10 14h4" />
     </svg>
   );
 }
@@ -414,3 +414,20 @@ export function RefreshIcon(props: IconProps) {
   );
 }
 
+
+/**
+ * A tag — the Topics section, and the visual root of the topic chip.
+ *
+ * Drawn as a luggage tag rather than a price tag: the hole and the angled
+ * corner survive at 20px in the collapsed navigation rail, where a price tag's
+ * single point becomes an ambiguous wedge.
+ */
+export function TagIcon(props: IconProps) {
+  return (
+    <svg {...svgProps(props)}>
+      <Titled title={props.title} />
+      <path d="M11.6 3.5H5a1.5 1.5 0 0 0-1.5 1.5v6.6a1.5 1.5 0 0 0 .44 1.06l7.4 7.4a1.5 1.5 0 0 0 2.12 0l6.6-6.6a1.5 1.5 0 0 0 0-2.12l-7.4-7.4a1.5 1.5 0 0 0-1.06-.44Z" />
+      <circle cx="8" cy="8" r="1.4" />
+    </svg>
+  );
+}

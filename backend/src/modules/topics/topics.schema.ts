@@ -38,3 +38,49 @@ export type GetTopicsQuery = z.infer<typeof getTopicsQuerySchema>;
  * names "a report date range ending before it starts" as its own worked
  * example of INVALID_REQUEST rather than VALIDATION_ERROR.
  */
+
+// ── Topic Intelligence ─────────────────────────────────────────────────────
+
+/**
+ * A topic id is either a taxonomy slug (`coal-reserves`) or a discovered one
+ * (`discovered:stripping-ratio`). The colon is admitted deliberately — it is the
+ * marker that separates curated vocabulary from a phrase the extractor found,
+ * and dropping it would make discovered topics unaddressable.
+ */
+export const topicIdSchema = z
+  .string()
+  .trim()
+  .min(2)
+  .max(80)
+  .regex(/^(discovered:)?[a-z0-9-]+( [a-z0-9-]+)*$/, 'must be a topic id');
+
+/**
+ * `?topic=a&topic=b` arrives as a string when there is one and an array when
+ * there are several. Normalising here means every consumer sees an array, and
+ * the single-value case cannot quietly take a different code path.
+ */
+export const topicListSchema = z
+  .union([topicIdSchema, z.array(topicIdSchema).max(8)])
+  .transform((v) => (Array.isArray(v) ? v : [v]));
+
+export const topicCatalogQuerySchema = z.object({
+  subsidiaryId: objectId.optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(40),
+  /**
+   * Discovered topics are included by default in the explorer and excluded from
+   * the filter's option list: a filter offering `discovered:coal handling` beside
+   * curated topics presents an unvetted phrase as vocabulary.
+   */
+  includeDiscovered: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+});
+
+export const topicAnalyticsQuerySchema = z.object({
+  subsidiaryId: objectId.optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(8),
+});
+
+export type TopicCatalogQuery = z.infer<typeof topicCatalogQuerySchema>;
+export type TopicAnalyticsQuery = z.infer<typeof topicAnalyticsQuerySchema>;

@@ -23,8 +23,11 @@ import { detectInjection, isSuspected } from '../../services/ai/injection.js';
 import { invalidateForSubsidiary } from '../../utils/aggregateCache.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { indexDocumentTerms } from '../topics/termIndexer.js';
+import { indexDocumentTopics } from '../topics/topicIndexer.js';
 import { TopicCache } from '../topics/topicCache.model.js';
 import { AnalyticsCache } from '../analytics/analyticsCache.model.js';
+import { MetricsCache } from '../dashboard/metricsCache.model.js';
+import { detectConflictsForDocument } from './conflictDetection.js';
 import { DocumentModel } from './document.model.js';
 import { DocumentChunk } from './documentChunk.model.js';
 import { ExtractedField } from './extractedField.model.js';
@@ -182,10 +185,43 @@ export async function processDocument(documentId: string): Promise<void> {
       { _id: id, subsidiaryId: claimed.subsidiaryId, createdAt: claimed.createdAt },
       result.chunks,
     );
+
+    // §7 — topic extraction, in the pipeline position the specification asks
+    // for: after chunking, before the document is announced as ready. Runs
+    // AFTER indexDocumentTerms so this document's own terms are part of the
+    // corpus the next document is scored against.
+    //
+    // Same failure contract as the line above: it records a status and returns
+    // rather than throwing, so a document whose subject could not be determined
+    // is still a document that was successfully read and stored.
+    const topicOutcome = await indexDocumentTopics(
+      {
+        _id: id,
+        subsidiaryId: claimed.subsidiaryId,
+        originalFilename: claimed.originalFilename,
+        type: claimed.type,
+        createdAt: claimed.createdAt,
+      },
+      result.chunks,
+      result.ocrConfidence,
+    );
+
+    /**
+     * §4.5 — does this document contradict one already on file?
+     *
+     * Last, because it compares the fields this run has just stored, and
+     * AWAITED rather than fired off: a conflict flips `requiresReview` on both
+     * documents, and the audit row written below should describe the document
+     * as it actually ends up, not as it was a moment before.
+     */
+    const conflicts = await detectConflictsForDocument(id);
+
     // Tracked, not a bare `void`: `drainProcessing()` must not resolve while
     // the cache rows this document invalidates are still being dropped, or a
     // caller that awaited quiescence reads figures that predate the document.
-    trackDeferred(invalidateForSubsidiary([TopicCache, AnalyticsCache], claimed.subsidiaryId));
+    trackDeferred(
+      invalidateForSubsidiary([TopicCache, AnalyticsCache, MetricsCache], claimed.subsidiaryId),
+    );
 
     await recordAudit({
       action: 'document.processed',
@@ -203,6 +239,14 @@ export async function processDocument(documentId: string): Promise<void> {
         // An audit log a reviewer reads must not itself carry the payload.
         ruleIds: injectionRuleIds,
         termsIndexed,
+        // §7/§25 — what the analysis concluded, in counts and a label only, so
+        // the processing trail records that the step ran and what it decided
+        // without copying document content into the audit log.
+        conflictsDetected: conflicts.conflicts,
+      conflictingMetrics: conflicts.metrics,
+      topicStatus: topicOutcome.status,
+        topicsExtracted: topicOutcome.topicCount,
+        primaryTopic: topicOutcome.primaryTopic,
         provider: getOcrProvider().name,
       },
     });

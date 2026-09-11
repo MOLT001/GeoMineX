@@ -10,8 +10,22 @@ import { normalisedText } from './unicodeNormalize.js';
 export const MIN_TERM_LENGTH = 3;
 export const MAX_TERM_LENGTH = 24;
 
-/** Single source of the term shape: 3..24 chars, starts with a letter. */
-export const TERM_REGEX = /[a-z][a-z0-9-]{2,23}/g;
+/**
+ * Single source of the term shape: 3..24 chars starting with a letter, PLUS the
+ * short letter-and-digit codes this domain is written in.
+ *
+ * ─── WHY THE SECOND BRANCH EXISTS ───────────────────────────────────────────
+ * Indian non-coking coal is graded G1 to G17, and half those codes are two
+ * characters. Under a flat three-character floor `G9` was not a term at all:
+ * not indexed, not searchable, and dropped from a question before it reached
+ * the retriever — so "what is the grade-wise production of G9" was scored as
+ * "grade wise production" and answered with the total.
+ *
+ * The branch is deliberately narrow — a letter followed by digits — so it
+ * admits `g9`, `g7` and `m3` while still excluding every two-letter English
+ * word, which is what the floor was there to keep out.
+ */
+export const TERM_REGEX = /[a-z][a-z0-9-]{2,23}|[a-z]\d{1,3}/g;
 
 /**
  * ~180 English function words plus document-scaffolding noise that dominates
@@ -77,12 +91,30 @@ export function bigrams(tokens: string[]): string[] {
   return out;
 }
 
-/** Sentences of 20..400 characters. A snippet must be a sentence, not a fragment. */
+/**
+ * A TABLE LINE: a label beside a figure, which is routinely far shorter than a
+ * sentence and is very often the whole answer.
+ *
+ * `G9  96,720` is ten characters. Under a flat twenty-character floor it was
+ * discarded before it could be scored, so a question about grade-wise
+ * production could only be answered from the surrounding prose — which on a
+ * production report is the title and the word "satisfactory".
+ */
+const TABLE_LINE = /[A-Za-z].*\d|\d.*[A-Za-z]/;
+
+/** Sentences of 20..400 characters, plus table lines. Never a prose fragment. */
 export function splitSentences(text: string): { text: string; index: number }[] {
   return normalisedText(text)
     .split(/(?<=[.!?])\s+|\n+/)
     .map((s) => s.trim())
-    .filter((s) => s.length >= 20 && s.length <= 400)
+    /**
+     * The length floor exists to keep prose FRAGMENTS out of an answer, and it
+     * still does — but a line pairing a word with a number is not a fragment,
+     * it is a row of a table, so it is admitted on its shape instead. Four
+     * characters is the shortest such line that can carry meaning; a bare `1`
+     * or `62%` has no label and stays out.
+     */
+    .filter((s) => s.length <= 400 && (s.length >= 20 || (s.length >= 4 && TABLE_LINE.test(s))))
     .map((s, index) => ({ text: s, index }));
 }
 

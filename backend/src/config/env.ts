@@ -115,6 +115,28 @@ const envSchema = z
     // Extractions at or below this confidence are flagged for manual review (§4.1).
     OCR_REVIEW_THRESHOLD: z.coerce.number().min(0).max(1).default(0.75),
 
+    /**
+     * Google Cloud Vision service-account JSON — the primary OCR engine.
+     *
+     * Permitted by the resolution of §11.7: external providers MAY process
+     * documents from this corpus. Unset, OCR falls back to the offline engine,
+     * so this is optional by design rather than by omission.
+     *
+     * Verified against the live API: Vision refuses an API key with
+     * `401 API keys are not supported by this API`, so this must be a SERVICE
+     * ACCOUNT. Accepts the JSON verbatim or base64-encoded — the raw form has
+     * newlines inside `private_key` that most .env loaders and every CI secret
+     * store mangle, so base64 is the form that survives them.
+     */
+    GOOGLE_VISION_CREDENTIALS: z.string().optional(),
+
+    /**
+     * Vision's host. Configurable because §11.3 (data residency) is still OPEN
+     * and is now the binding constraint — if a region requirement lands, it
+     * should be a deployment change rather than a code change.
+     */
+    GOOGLE_VISION_ENDPOINT: z.string().default('https://vision.googleapis.com'),
+
     // ── AI query & retrieval (PRD §4.4, §9.5, §11.2, §11.7) ──────────────
     /**
      * §11.7 ("may external providers process government documents?") is a

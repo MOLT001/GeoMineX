@@ -50,6 +50,21 @@ const ACCEPTED: AcceptedType[] = [
   // the check, and the content is inert (never executed — §9.4).
   { extensions: ['.csv'], mimeTypes: ['text/csv', 'application/csv'], sniffed: null, documentType: 'spreadsheet' },
   { extensions: ['.txt'], mimeTypes: ['text/plain'], sniffed: null, documentType: 'spreadsheet' },
+  /**
+   * A zip of the above. Its members are unpacked and read in-process by
+   * services/ocr/archive.ts, which enforces its own decompressed-size, member
+   * count and per-member limits — the upload cap alone cannot bound a zip,
+   * because a few kilobytes can expand to gigabytes.
+   *
+   * `.xlsx` is also a zip, so the sniffer reports `application/zip` for both;
+   * the EXTENSION is what separates them, which is why it is checked first.
+   */
+  {
+    extensions: ['.zip'],
+    mimeTypes: ['application/zip', 'application/x-zip-compressed'],
+    sniffed: ['application/zip'],
+    documentType: 'archive',
+  },
 ];
 
 export interface ValidatedFile {

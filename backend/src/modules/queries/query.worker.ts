@@ -33,9 +33,11 @@ import { invalidateForSubsidiary } from '../../utils/aggregateCache.js';
 import { getAiProvider } from '../../services/ai/index.js';
 import { newContextNonce } from '../../services/ai/prompt.js';
 import { recordAudit } from '../audit/audit.service.js';
+import { openConflictsForDocuments } from '../documents/conflictDetection.js';
 import { User } from '../users/user.model.js';
 import { TopicCache } from '../topics/topicCache.model.js';
 import { AnalyticsCache } from '../analytics/analyticsCache.model.js';
+import { MetricsCache } from '../dashboard/metricsCache.model.js';
 import { indexQueryTerms } from '../topics/termIndexer.js';
 import {
   QueryModel,
@@ -287,8 +289,30 @@ export async function processQuery(queryId: string): Promise<void> {
     const answerStatus: AnswerStatus =
       citations.length === 0 ? 'unsupported' : discarded > 0 ? 'partially_sourced' : 'sourced';
 
+    /**
+     * ── 8b. §4.5 — do the CITED documents contradict each other on what was
+     * actually asked?
+     *
+     * Computed here rather than inside `finish`, because relevance needs the
+     * question and `FinishArgs` deliberately excludes it: that type feeds the
+     * audit row, which must never carry question or answer text (§9.5, §9.6).
+     * Only the metric labels and the disputed figures cross into it.
+     */
+    const conflictingMetrics = (
+      await openConflictsForDocuments(
+        [...new Set(citations.map((c) => String(c.documentId)))].map((v) => new Types.ObjectId(v)),
+        { questionText: claimed.questionText, answerText: responseText },
+      )
+    ).map((c) => ({
+      metricLabel: c.metricLabel,
+      reason: c.reason,
+      ...(c.quoted ? { quoted: c.quoted } : {}),
+      readings: c.readings.map((r) => ({ originalFilename: r.originalFilename, value: r.value })),
+    }));
+
     // ── 9. Persist the terminal state.
     await finish(id, {
+      conflictingMetrics,
         askedBy: String(claimed.askedBy),
         subsidiaryIds: subsidiaryIds.map(String),
       status: citations.length === 0 ? 'unsupported' : 'answered',
@@ -330,7 +354,7 @@ export async function processQuery(queryId: string): Promise<void> {
       );
     }
     for (const s of subsidiaryIds) {
-      trackDeferred(invalidateForSubsidiary([TopicCache, AnalyticsCache], s));
+      trackDeferred(invalidateForSubsidiary([TopicCache, AnalyticsCache, MetricsCache], s));
     }
   } catch (err) {
     // §9.4 — a defined failure state and a NON-SENSITIVE reason. The raw error
@@ -382,6 +406,15 @@ interface FinishArgs {
   generationMs: number;
   citations: QueryCitation[];
   discarded: number;
+  /**
+   * §4.5 — metrics on which the cited documents disagree, already filtered to
+   * the question. Labels and figures only; no question or answer text, so this
+   * stays safe to reach the audit row.
+   */
+  conflictingMetrics?: Array<{
+    metricLabel: string;
+    readings: Array<{ originalFilename: string; value: string }>;
+  }>;
 }
 
 /**
@@ -421,12 +454,25 @@ async function finish(id: Types.ObjectId, r: FinishArgs): Promise<void> {
 
   const injectionSuspected = r.retrieval.flags.length > 0;
 
+  const conflictingMetrics = r.conflictingMetrics ?? [];
+
   await QueryModel.updateOne(
     { _id: id },
     {
       $set: {
         status: r.status,
         answerStatus: r.answerStatus,
+        conflictingMetrics,
+        /**
+         * A contradicted answer goes into the human queue whatever it was
+         * before. This is the one condition that can promote an otherwise
+         * routine query to `pending`: the figures are individually sourced and
+         * individually citable, and collectively they cannot both be right.
+         *
+         * `not_required` is never restored here — a parliamentary query already
+         * pending review stays pending.
+         */
+        ...(conflictingMetrics.length > 0 ? { reviewStatus: 'pending' as const } : {}),
         responseText: r.responseText,
         citations: r.citations,
         retrievedChunkIds: retrieved.map((v) => v.chunkId),
@@ -461,6 +507,7 @@ async function finish(id: Types.ObjectId, r: FinishArgs): Promise<void> {
       passagesUsed: r.retrieval.refs.length,
       passagesWithheld: r.retrieval.withheld,
       injectionSuspected,
+      conflictsFlagged: conflictingMetrics.length,
       provider: r.provider,
       generationMs: r.generationMs,
     },

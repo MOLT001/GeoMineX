@@ -92,6 +92,29 @@ describe('Dashboard (PRD §5.3)', () => {
     expect(second.body.data.computedAt).toBe(first.body.data.computedAt);
   });
 
+  it('drops the cached figures when a document finishes processing', async () => {
+    /**
+     * THE BUG. `MetricsCache` predates the shared cache helper and stores its
+     * figures as flat columns rather than an opaque payload, so it carried no
+     * record of the scope it covered — and `invalidateForSubsidiary`, which
+     * matches on exactly that, could not see it. The result was that NOTHING
+     * invalidated it: the landing page went on reporting zero documents for the
+     * full `METRICS_CACHE_TTL_SECONDS` after an upload had already been read,
+     * processed and validated.
+     */
+    const before = await api().get('/api/v1/dashboard/metrics').set(ctx.cilAuth.header).expect(200);
+    expect(before.body.data.documentsTotal).toBe(0);
+    expect(before.body.data.cached).toBe(false);
+
+    await uploadTo(ctx.cilAuth, ctx.bccl.id);
+
+    const after = await api().get('/api/v1/dashboard/metrics').set(ctx.cilAuth.header).expect(200);
+    // Recomputed, not served from the row written a moment ago.
+    expect(after.body.data.cached).toBe(false);
+    expect(after.body.data.documentsTotal).toBe(1);
+    expect(after.body.data.documentsValidated).toBe(1);
+  });
+
   it('scopes cached metrics per subsidiary — no cross-tenant leakage', async () => {
     await uploadTo(ctx.cilAuth, ctx.bccl.id);
 

@@ -1,454 +1,325 @@
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api/client';
-import { toIstCalendarDate } from '@/lib/datetime';
 
 /**
- * Topic analysis — PRD §10.5, §4.6.
+ * Topic & Keyword Intelligence — server state.
  *
- * The whole module is ONE endpoint, `GET /topics`, mounted at
- * `backend/src/routes/index.ts:57`. It is not paginated, carries no
- * `pagination` key, and has no mutations — so there is a single query hook here
- * and nothing of its own to invalidate.
+ * Everything here is DERIVED and already stored: the backend extracts a
+ * document's topics once, in the ingestion worker, and these endpoints read
+ * rows. No hook in this file causes analysis to happen, which is why they can
+ * be cached for minutes and mounted on a dashboard without thought.
  *
- * Payload size is bounded by `limit` rather than by paging, and the trend
- * section is roughly `limit x range.buckets.length` points (200 x ~36 at the
- * 1100-day range cap), which is a large single JSON body. Keep `limit` modest
- * when the trend chart is on screen.
+ * The one exception is `useReprocessTopics`, which is a deliberate user action
+ * and is the only mutation here.
  *
- * The backend keeps its OWN read-through cache of this payload and drops it for
- * a subsidiary whenever that subsidiary's corpus changes — a document reaching
- * `validated`, an extracted-field override, a report publish or archive, a
- * query worker hitting a terminal status (`backend/src/utils/aggregateCache.ts:74-90`).
- * That invalidation is server-side only; a feature module performing one of
- * those mutations should also invalidate the `['topics']` key prefix here if it
- * wants the chart to move without waiting out `staleTime`.
+ * ─── WHAT THE BACKEND IS AND IS NOT ─────────────────────────────────────────
+ * Topics are scored deterministically against a curated geological/mining
+ * taxonomy plus inverse document frequency over the subsidiary's own corpus.
+ * There is no model call and no embedding: `relevance` is a within-document
+ * ranking, comparable between the topics of ONE document and meaningless
+ * between two. Do not build a UI that compares one document's 0.82 against
+ * another's.
  */
 
-// ─── Enums ───────────────────────────────────────────────────────────────────
-
-/** `backend/src/utils/istPeriod.ts:21` — only these two. No 'day', 'week' or 'year'. */
-export type Granularity = 'month' | 'quarter';
+// ─── Entities ────────────────────────────────────────────────────────────────
 
 /**
- * `topics.schema.ts:23`. 'all' expands to `['document','query']` server-side.
- *
- * Worth pinning to one or the other: under 'all', `clusters[].sourceIds` mixes
- * document ids and query ids with NO discriminator anywhere in the response, so
- * a "jump to this source" affordance cannot know whether to route to
- * /documents/:id or /queries/:id.
- *
- * Note also that only a query's QUESTION text is indexed, never the generated
- * answer (`termIndexer.ts:88-96`), so `source='query'` is what people ASKED —
- * do not label that view as topics found in answers.
+ * `documentTopic.model.ts`. `topicId` is a taxonomy slug, or `discovered:<phrase>`
+ * for a phrase the extractor found that the taxonomy does not know — `discovered`
+ * is the flag to switch presentation on, never a prefix check on the id.
  */
-export type TopicsSourceFilter = 'document' | 'query' | 'all';
-
-/** `topics.schema.ts:26`. 'none' makes `comparison` null. */
-export type TopicsCompareMode = 'previous' | 'none';
-
-/**
- * `topics.schema.ts:27` — a STRING enum, not a boolean, tested with
- * `=== 'true'` at `topics.service.ts:391`. `?cluster=1`, `?cluster=TRUE` and an
- * empty `?cluster` are 400s, not falsy values.
- */
-export type TopicsClusterFlag = 'true' | 'false';
-
-export type TrendDirection = 'up' | 'down' | 'flat';
-
-// ─── Request ─────────────────────────────────────────────────────────────────
-
-/**
- * The wire query for `GET /topics`, verbatim.
- *
- * A `type` and not an `interface` because only a type alias picks up the
- * implicit index signature that `api.get`'s `query` bag requires.
- *
- * EVERY key is optional and NONE tolerates an empty value: Zod's `.default()`
- * fires on `undefined` only, so `?from=`, `?subsidiaryId=` and `?limit=` are
- * 400 VALIDATION_ERROR rather than a fallback to the default. That is the most
- * likely way a generated query string breaks this endpoint, which is why
- * `toTopicsQuery` below omits blank keys instead of forwarding them.
- */
-export type GetTopicsQuery = {
-  /** IST calendar date, `/^\d{4}-\d{2}-\d{2}$/`. Default: April 1 of the current Indian fiscal year. */
-  from?: string;
-  /** IST calendar date, same regex. INCLUSIVE of that whole IST day. Default: the request instant. */
-  to?: string;
-  /** Default 'quarter'. */
-  granularity?: Granularity;
-  /**
-   * 24-hex ObjectId. Out of scope => 404 NOT_FOUND, never 403.
-   *
-   * There is NO existence check behind that, though: a well-formed id that
-   * names nothing — or that an admin holds by virtue of holding everything —
-   * returns 200 with an empty `wordCloud`/`trend`, which is indistinguishable
-   * from a real subsidiary with no corpus. Do not render the empty state as
-   * "no such subsidiary".
-   */
-  subsidiaryId?: string;
-  /** Default 'all'. */
-  source?: TopicsSourceFilter;
-  /** Integer 5..200, default 50. Applies to `wordCloud` AND `trend`; `5.5` is a 400. */
-  limit?: number;
-  /** Integer 1..50, default 2. A term in fewer distinct sources is dropped from every section. */
-  minSources?: number;
-  /** Default 'previous'. */
-  compare?: TopicsCompareMode;
-  /** Default 'true'. */
-  cluster?: TopicsClusterFlag;
-};
-
-/**
- * What `useTopics` accepts.
- *
- * Identical to the wire query except that `from`/`to` also take a `Date`, which
- * is converted with `toIstCalendarDate`. That exists so no caller ever reaches
- * for `toISOString().slice(0, 10)`: for any instant after 18:30 UTC that string
- * names the PREVIOUS IST calendar day, and these params are read as IST
- * calendar dates, not as instants.
- *
- * Defaults are applied PER EDGE, not per pair (`topics.service.ts:308-310`):
- * sending only `from` means "from then until now"; sending only `to` means
- * "from April 1 of the current fiscal year until then". So a future `from` with
- * no `to` is a 400 INVALID_REQUEST ('Range ends before it starts'), not an
- * empty result.
- */
-export interface TopicsParams {
-  from?: string | Date;
-  to?: string | Date;
-  granularity?: Granularity;
-  subsidiaryId?: string;
-  source?: TopicsSourceFilter;
-  limit?: number;
-  minSources?: number;
-  compare?: TopicsCompareMode;
-  cluster?: TopicsClusterFlag;
+export interface DocumentTopic {
+  topicId: string;
+  label: string;
+  category: string;
+  /** 0..1 against THIS document's leading topic. Not comparable across documents. */
+  relevance: number;
+  /** How many times the topic's vocabulary appeared. */
+  termCount: number;
+  /** The wordings the document actually used — show these, not the label, as proof. */
+  matchedTerms: string[];
+  discovered: boolean;
+  firstPage: number | null;
+  /** Verbatim slices of the document. Render as text; never as HTML. */
+  evidence: { chunkIndex: number; pageNumber: number | null; quote: string }[];
 }
 
-// ─── Response ────────────────────────────────────────────────────────────────
+export interface ScoredTerm {
+  term: string;
+  count: number;
+  /** True for curated mining vocabulary, false for a phrase found in the text. */
+  domain: boolean;
+}
 
-export interface TopicsScope {
+/**
+ * `documentIntelligence.model.ts`. SEPARATE from `document.status`, and the two
+ * answer different questions: `document.status` is "was the file read",
+ * this is "was it understood". A document can be `validated` and
+ * `insufficient_text` at once, and both are true.
+ */
+export type IntelligenceStatus =
+  | 'pending'
+  | 'processing'
+  | 'extracted'
+  | 'insufficient_text'
+  | 'low_quality'
+  | 'failed';
+
+export interface DocumentIntelligence {
+  documentId: string;
+  status: IntelligenceStatus;
+  /** 0..1, capped by OCR quality. 0 whenever there is no primary topic. */
+  confidence: number;
+  extractionVersion: string;
+  extractedAt: string | null;
+  primaryTopic: DocumentTopic | null;
+  secondaryTopics: DocumentTopic[];
+  keywords: ScoredTerm[];
+  technicalTerms: ScoredTerm[];
   /**
-   * The RESOLVED scope, not the caller's grant list: a non-admin holding three
-   * grants who sends `subsidiaryId=X` gets back `['X']` (`scopeKey.ts:39-42`).
-   *
-   * `[]` is ambiguous on its own — it means both "unscoped admin" and
-   * "non-admin holding zero grants" (`topics.service.ts:223` maps a null scope
-   * to `[]`). Read `unscoped` to tell them apart. A non-admin with zero grants
-   * gets 200 and an empty payload, not an error.
+   * Sentences SELECTED verbatim from the document — never generated prose. It
+   * can therefore be empty, and an empty summary is a fact about the document
+   * rather than a failure.
    */
+  summary: string;
+  /** Non-sensitive reason, present only when `status === 'failed'`. */
+  error: string | null;
+}
+
+export interface CatalogTopic {
+  topicId: string;
+  label: string;
+  category: string;
+  discovered: boolean;
+  documentCount: number;
+  /** How often this is a document's LEADING subject, not merely present. */
+  primaryCount: number;
+  averageRelevance: number;
+  lastSeenAt: string | null;
+  /**
+   * Measured co-occurrence in this corpus, topped up from the taxonomy's
+   * curated edges. `sharedDocuments: 0` means the edge is curated, not observed
+   * — worth showing differently rather than as a count of nothing.
+   */
+  relatedTopics: { topicId: string; label: string; sharedDocuments: number }[];
+  recentDocuments: { id: string; originalFilename: string; createdAt: string; relevance: number }[];
+}
+
+export interface TopicAnalytics {
+  totalDocuments: number;
+  /** Documents that have been through extraction. Never exceeds `totalDocuments`. */
+  analysedDocuments: number;
+  topTopics: { topicId: string; label: string; category: string; documentCount: number }[];
+  byCategory: { category: string; documentCount: number }[];
+  /**
+   * More documents in the last 90 days than in the 90 before. `change` is a
+   * COUNT difference, deliberately not a percentage: a percentage against a
+   * previous zero is either infinite or invented, and a topic with no history
+   * is the strongest case of emerging there is.
+   */
+  emergingTopics: { topicId: string; label: string; recent: number; previous: number; change: number }[];
+  extractionHealth: { status: IntelligenceStatus; count: number }[];
+}
+
+export interface RelatedDocument {
+  id: string;
+  originalFilename: string;
+  createdAt: string;
+  status: string;
+  sharedTopics: { topicId: string; label: string }[];
+  /**
+   * 0..1 — the share of the SOURCE document's topic weight the two have in
+   * common. Topic overlap, not semantic similarity: there is no embedding model
+   * behind it, so do not label it as one in the UI.
+   */
+  similarity: number;
+}
+
+export interface TopicScope {
   subsidiaryIds: string[];
-  /** True only for an admin who sent no `subsidiaryId` (`topics.service.ts:224`). */
   unscoped: boolean;
 }
 
-export interface TopicsRange {
-  /**
-   * Echoes the client's `from` VERBATIM (`topics.service.ts:322`), or the
-   * derived default. The schema regex checks SHAPE ONLY, so `2026-02-30` and
-   * `2026-13-01` pass validation and then roll over silently through `Date.UTC`
-   * (`istPeriod.ts:78-79`), leaving this field contradicting `fromUtc` with no
-   * error raised. Render `fromUtc`/`toUtc`/`buckets`, not `from`/`to`.
-   */
-  from: string;
-  /** Echoes the client's `to`, or the IST date of the request instant. INCLUSIVE. */
-  to: string;
-  /** ISO-8601 UTC instant, INCLUSIVE lower bound — this one is the derived value. */
-  fromUtc: string;
-  /** ISO-8601 UTC instant, EXCLUSIVE upper bound. */
-  toUtc: string;
-  granularity: Granularity;
-  /**
-   * Contiguous, ascending, gap-free bucket keys covering `[fromUtc, toUtc)`;
-   * always at least one. 'month' gives `'2026-04'`, 'quarter' gives
-   * `'FY2026-Q1'` (Indian FY, starting April). Neither form survives
-   * `new Date()`, and both sort lexicographically = chronologically, so use
-   * this array's order directly.
-   *
-   * These are WHOLE buckets even when the range starts or ends mid-bucket —
-   * `from=2026-01-01&to=2026-06-30` returns `['FY2025-Q4','FY2026-Q1']` — so
-   * the FIRST and LAST points of every series are PARTIAL periods. On the
-   * default fiscal-year-to-date range that makes `comparison` weigh a partial
-   * current quarter against a complete previous one and report a spurious
-   * `down` for nearly every term. Either mark the last bucket as partial in the
-   * UI, or pin `to` to the end of the last complete bucket.
-   */
-  buckets: string[];
-  /**
-   * Always the literal display string `'Asia/Kolkata (+05:30)'`
-   * (`istPeriod.ts:18`) — NOT an IANA zone id. Passing it to
-   * `Intl.DateTimeFormat({ timeZone })` throws a RangeError.
-   */
-  timezone: string;
-  /** Always 4 (`istPeriod.ts:19`). */
-  fiscalYearStartMonth: number;
-}
-
-export interface WordCloudEntry {
-  /**
-   * A single lowercase token matching `/[a-z][a-z0-9-]{2,23}/`
-   * (`textTerms.ts:14`): 3..24 chars, first character a letter, digits and
-   * hyphens allowed, NEVER a space. Stopword-filtered at write time, and there
-   * is no bigram or phrase indexing — so a raw term is not a readable heading.
-   */
-  term: string;
-  /** Sum of per-source occurrence counts across the range. Always >= 1. */
-  frequency: number;
-  /**
-   * Distinct sources containing the term — the TRUE count. It is computed on
-   * the pre-slice array, so unlike `TermCluster.sourceCount` it is NOT capped
-   * at 25 (`topics.pipelines.ts:65` vs `:81`).
-   */
-  sourceCount: number;
-  /**
-   * `frequency / wordCloud[0].frequency`, rounded to 3 dp
-   * (`topics.service.ts:182`), so the first entry is always exactly 1. Scale
-   * font size against this; do not recompute it from `frequency`.
-   */
-  weight: number;
-}
-
-export interface TermCluster {
-  /**
-   * The seed (highest-frequency) member with only its FIRST character
-   * upper-cased (`textTerms.ts:107-108`). Because terms are single tokens this
-   * is always ONE word — `'colliery'` becomes `'Colliery'`. It is not
-   * multi-word title case.
-   */
-  label: string;
-  /** 1..12 members, seed first (`clustering.ts:89` caps growth at 12). */
-  terms: string[];
-  /** Sum of the member terms' frequencies. */
-  frequency: number;
-  /**
-   * Size of the union of the members' ALREADY-SAMPLED source sets, so it
-   * UNDER-reports and will NOT match `WordCloudEntry.sourceCount` for a term
-   * appearing in more than 25 sources (`clustering.ts:102`,
-   * `topics.pipelines.ts:81`). The word cloud's count is the true one; this one
-   * is not.
-   */
-  sourceCount: number;
-  /**
-   * A bounded sample: sorted, then sliced to AT MOST 25 ids
-   * (`clustering.ts:103`) — the 25 lexicographically smallest — drawn from
-   * per-term samples that are themselves capped at 25. `sourceIds.length` is
-   * `<= sourceCount`, often far less.
-   *
-   * These are the ONLY ids in the entire response. Under `source='all'` they
-   * mix document ids and query ids with no type discriminator, so pin
-   * `source` before linking out of them.
-   */
-  sourceIds: string[];
-}
-
-export interface TrendPoint {
-  /** One of `range.buckets`, same format and same index position. */
-  bucket: string;
-  /** The rendered form: `'2026-04'` -> `'April 2026'`, `'FY2025-Q1'` -> `'FY2025-26 Q1'`. */
-  label: string;
-  /** Zero-filled: an absent bucket is 0, never omitted and never null. */
-  frequency: number;
-  /** Distinct sources for this term IN THIS BUCKET. Zero-filled. */
-  sourceCount: number;
-}
-
-export interface TrendEntry {
-  term: string;
-  /** Sum of `series[].frequency` across the whole range. */
-  total: number;
-  /**
-   * ALWAYS exactly `range.buckets.length` long, in that same ascending order,
-   * zero-filled (`topics.service.ts:208-217`) — no missing points and no nulls,
-   * including for a zero bucket in the MIDDLE of the series. A chart may index
-   * this against `range.buckets` positionally.
-   */
-  series: TrendPoint[];
-}
-
-export interface ComparisonTerm {
-  term: string;
-  /** Frequency in `comparison.currentPeriod`. */
-  current: number;
-  /** Frequency in `comparison.previousPeriod`. */
-  previous: number;
-  /** `current - previous`; may be negative. */
-  change: number;
-  /**
-   * null — never Infinity, never 100 — whenever `previous` is 0
-   * (`topics.service.ts:277`). The key is always PRESENT with the value null,
-   * so render "new" rather than a percentage. Rounded to 1 dp otherwise.
-   */
-  changePercent: number | null;
-  direction: TrendDirection;
-}
-
-export interface TopicsComparison {
-  /** The LAST bucket of `range.buckets` — on the default range, a PARTIAL period. */
-  currentPeriod: string;
-  /** The bucket before it (`istPeriod.ts:118-121`); equals `range.buckets[length - 2]`. */
-  previousPeriod: string;
-  /** Same term order and same length as `trend` (total desc, then term asc). */
-  terms: ComparisonTerm[];
-  /** Terms with `previous === 0 && current > 0`, sorted ascending as plain strings. */
-  emerging: string[];
-  /** Terms with `previous > 0 && current === 0`, sorted ascending as plain strings. */
-  fading: string[];
-}
-
-/** The `data` of `GET /topics`. */
-export interface TopicsResponse {
-  scope: TopicsScope;
-  range: TopicsRange;
-  /** Frequency desc, then term asc. Length `<= limit`. `[]` when nothing matches. */
-  wordCloud: WordCloudEntry[];
-  /**
-   * `[]` — never null, never absent — when `cluster='false'`, and `[]` when the
-   * cloud is empty.
-   *
-   * Clusters do NOT cover the word cloud. Only the top 60 terms are ever
-   * considered (`clustering.ts:72-74`), and once 25 clusters exist a term that
-   * matches nothing — or that matches a cluster already holding its 12 members
-   * — is SILENTLY DROPPED: `clustering.ts:89-95` has no else branch. Never
-   * derive the term list from here; use `wordCloud`.
-   */
-  clusters: TermCluster[];
-  /**
-   * The same term set in the same order as `wordCloud` — same rows, same
-   * distinct-source floor, same sort, same limit — and `comparison.terms`
-   * mirrors this order in turn. Safe to zip the three by index, though joining
-   * on `term` is the safer habit.
-   */
-  trend: TrendEntry[];
-  /**
-   * null for TWO different reasons: the caller sent `compare='none'`, or the
-   * range enumerated fewer than 2 buckets (`topics.service.ts:230` and `:252`).
-   * The second is deliberate — comparing against a bucket outside the
-   * aggregation window would report a fabricated 100% drop — and is common at
-   * the default `granularity='quarter'`. Do not render null as "no change".
-   */
-  comparison: TopicsComparison | null;
-  /** ISO-8601 UTC instant the payload was computed. Unchanged across cache hits. */
-  computedAt: string;
-  /**
-   * True => served from the server's cache, in which case `computedAt` AND
-   * `range` both come from that earlier run: on a default (no `to`) request
-   * `range.toUtc` can be up to the cache TTL old. Render freshness from
-   * `computedAt` + `cached`, never from `range.toUtc`.
-   */
-  cached: boolean;
-}
-
-// ─── Params to query string ──────────────────────────────────────────────────
-
 /**
- * Guard for the shape the schema regex accepts but the calendar does not.
+ * Human labels for the taxonomy's categories.
  *
- * `from=2026-02-30` and `from=2026-13-01` pass Zod (`topics.schema.ts:15`
- * checks shape only) and then roll over silently through `Date.UTC`, returning
- * 200 for a range nobody asked for while `range.from` echoes the bad string
- * back. Nothing server-side complains, so a date field that can emit a
- * free-typed value has to check here first.
+ * A `Record` rather than a lookup with a fallback, so a category added to the
+ * backend fails to compile here instead of rendering as a bare slug. `discovered`
+ * is a real category: it is what a topic found in the text belongs to.
  */
-export function isRealIstCalendarDate(value: string): boolean {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) return false;
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  return (
-    date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
-  );
-}
+export const TOPIC_CATEGORY_LABELS: Record<string, string> = {
+  exploration: 'Exploration',
+  geology: 'Geology',
+  planning: 'Planning',
+  operations: 'Operations',
+  production: 'Production',
+  quality: 'Quality',
+  environment: 'Environment',
+  safety: 'Safety',
+  commercial: 'Commercial',
+  regulatory: 'Regulatory',
+  discovered: 'Found in documents',
+};
 
-function calendarDate(value: string | Date | undefined): string | undefined {
-  if (value === undefined) return undefined;
-  if (value instanceof Date) return toIstCalendarDate(value);
-  // A blank is dropped rather than forwarded: see `GetTopicsQuery` — an empty
-  // value is a 400, not a fallback to the server default.
-  const trimmed = value.trim();
-  return trimmed === '' ? undefined : trimmed;
+export function categoryLabel(category: string): string {
+  return TOPIC_CATEGORY_LABELS[category] ?? category;
 }
 
 /**
- * Build the wire query, omitting every key the caller did not set.
- *
- * Exported because this object is also the query key, so a screen that wants to
- * prefetch or invalidate one exact variant can build the identical one.
+ * How to describe an extraction state to someone who is not going to read a
+ * schema. Every one of these is a real state a document reaches, and none of
+ * them means "broken" except `failed`.
  */
-export function toTopicsQuery(params: TopicsParams = {}): GetTopicsQuery {
-  const query: GetTopicsQuery = {};
+export const INTELLIGENCE_STATUS_LABELS: Record<IntelligenceStatus, string> = {
+  pending: 'Not analysed yet',
+  processing: 'Analysing',
+  extracted: 'Analysed',
+  insufficient_text: 'Too little text to analyse',
+  low_quality: 'Analysed — scan quality is low',
+  failed: 'Analysis failed',
+};
 
-  const from = calendarDate(params.from);
-  if (from !== undefined) query.from = from;
-  const to = calendarDate(params.to);
-  if (to !== undefined) query.to = to;
-
-  if (params.granularity) query.granularity = params.granularity;
-  if (params.subsidiaryId) query.subsidiaryId = params.subsidiaryId;
-  if (params.source) query.source = params.source;
-  if (typeof params.limit === 'number') query.limit = params.limit;
-  if (typeof params.minSources === 'number') query.minSources = params.minSources;
-  if (params.compare) query.compare = params.compare;
-  if (params.cluster) query.cluster = params.cluster;
-
-  return query;
-}
-
-// ─── Hook ────────────────────────────────────────────────────────────────────
+// ─── Reads ───────────────────────────────────────────────────────────────────
 
 /**
- * `GET /topics` — word cloud, clusters, trend series and period comparison in
- * one payload.
+ * The taxonomy, for a filter's option list.
  *
- * Two 400s, and a date picker must handle them separately because only ONE of
- * them can be attached to a field:
- *
- *   VALIDATION_ERROR  message `Validation failed`, WITH `error.fields` keyed by
- *                     the failing query param name (`from`, `limit`, …, or the
- *                     literal `query` for an object-level issue,
- *                     `middleware/validate.ts:51`). A malformed date or id.
- *   INVALID_REQUEST   NO `fields` at all: `Range ends before it starts`
- *                     (`topics.service.ts:313`) or `Range exceeds the maximum of
- *                     1100 days` (env.TOPICS_MAX_RANGE_DAYS,
- *                     `topics.service.ts:315-320`). A form that only reads
- *                     `error.fields` renders nothing for either — surface these
- *                     on the range control itself, from `error.message`.
- *
- * Both still cost quota: the limiter runs BEFORE validation
- * (`topics.routes.ts:24`), so a malformed range spends budget, and answers 429
- * rather than 400 once the caller is over it.
- *
- * `staleTime` is deliberately long. The response is read-through cached
- * server-side for 900s, so a refetch inside that window returns the identical
- * payload with `cached: true` and an unchanged `computedAt`: it buys nothing
- * and spends `analyticsLimiter` budget, which is 30 requests/minute per USER id
- * — not per IP — shared across every analytics screen the user has open. Five
- * minutes rather than the full TTL because the server drops its entry early
- * whenever the subsidiary's corpus changes, and a chart should not lag that by
- * much.
- *
- * No `refetchInterval`: nothing here is a job that completes, so polling would
- * only burn the same budget.
+ * Served from a constant compiled into the server, so it never changes between
+ * deploys — cached for the session and never refetched on focus. This is the
+ * complete vocabulary, INCLUDING topics no document has yet; the counted
+ * version is `useTopicCatalog`.
  */
-export function useTopics(params: TopicsParams = {}, options: { enabled?: boolean } = {}) {
-  const query = toTopicsQuery(params);
-
+export function useTopicVocabulary() {
   return useQuery({
-    queryKey: ['topics', query],
-    queryFn: async ({ signal }) => {
-      const { data } = await api.get<TopicsResponse>('/topics', { query, signal });
-      return data;
+    queryKey: ['topics', 'vocabulary'],
+    queryFn: ({ signal }) =>
+      api
+        .get<{ topics: { topicId: string; label: string; category: string }[] }>('/topics/vocabulary', {
+          signal,
+        })
+        .then((envelope) => envelope.data.topics),
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnWindowFocus: false,
+  });
+}
+
+/** The server caches this for `TOPICS_CACHE_TTL_SECONDS`; matching it here avoids a pointless round trip. */
+const CATALOG_STALE_MS = 5 * 60_000;
+
+/**
+ * Every topic present in the caller's corpus, with counts, recent documents and
+ * related topics — the Topic Explorer, and the counted filter list.
+ */
+export function useTopicCatalog(
+  params: { subsidiaryId?: string; limit?: number; includeDiscovered?: boolean } = {},
+) {
+  return useQuery({
+    queryKey: ['topics', 'catalog', params],
+    queryFn: ({ signal }) =>
+      api
+        .get<{ scope: TopicScope; topics: CatalogTopic[]; computedAt: string; cached: boolean }>(
+          '/topics/catalog',
+          {
+            query: {
+              subsidiaryId: params.subsidiaryId,
+              limit: params.limit,
+              // The wire form is the STRING 'true'/'false', matching every other
+              // boolean query parameter in this API.
+              includeDiscovered:
+                params.includeDiscovered === undefined ? undefined : String(params.includeDiscovered),
+            },
+            signal,
+          },
+        )
+        .then((envelope) => envelope.data),
+    staleTime: CATALOG_STALE_MS,
+  });
+}
+
+/** §14 — the dashboard's Document Intelligence panel. */
+export function useTopicAnalytics(params: { subsidiaryId?: string; limit?: number } = {}) {
+  return useQuery({
+    queryKey: ['topics', 'analytics', params],
+    queryFn: ({ signal }) =>
+      api
+        .get<{ scope: TopicScope; analytics: TopicAnalytics; computedAt: string; cached: boolean }>(
+          '/topics/analytics',
+          { query: { subsidiaryId: params.subsidiaryId, limit: params.limit }, signal },
+        )
+        .then((envelope) => envelope.data),
+    staleTime: CATALOG_STALE_MS,
+  });
+}
+
+/**
+ * One document's analysis.
+ *
+ * `enabled` exists because the detail page mounts this beside a document that
+ * may still be in the worker: extraction runs at the END of processing, so
+ * asking before the document is at rest caches a `pending` record for minutes.
+ * Gate it on the document being validated, exactly as the chunk and
+ * extracted-field panels do.
+ *
+ * A 404 here is the document being absent or out of scope — never a missing
+ * analysis. An unanalysed document returns 200 with `status: 'pending'`.
+ */
+export function useDocumentIntelligence(documentId: string, options: { enabled?: boolean } = {}) {
+  return useQuery({
+    queryKey: ['documents', 'detail', documentId, 'topics'],
+    queryFn: ({ signal }) =>
+      api.get<DocumentIntelligence>(`/documents/${documentId}/topics`, { signal }).then((e) => e.data),
+    enabled: (options.enabled ?? true) && documentId !== '',
+  });
+}
+
+/** §17 — historical documents that share this one's subjects. */
+export function useRelatedDocuments(
+  documentId: string,
+  options: { limit?: number; enabled?: boolean } = {},
+) {
+  return useQuery({
+    queryKey: ['documents', 'detail', documentId, 'related', options.limit ?? 5],
+    queryFn: ({ signal }) =>
+      api
+        .get<{ documentId: string; related: RelatedDocument[] }>(`/documents/${documentId}/related`, {
+          query: { limit: options.limit },
+          signal,
+        })
+        .then((envelope) => envelope.data.related),
+    enabled: (options.enabled ?? true) && documentId !== '',
+  });
+}
+
+// ─── Mutation ────────────────────────────────────────────────────────────────
+
+/**
+ * Re-run the analysis for one document — admin and CIL User only.
+ *
+ * It does NOT re-read the file or re-run OCR; `useRetryDocument` is the action
+ * for that. Conflating them in the UI would let a cheap button schedule an
+ * expensive job.
+ *
+ * The corpus-wide views are invalidated as well as the document's own, because
+ * re-extraction changes the counts behind the catalogue, the analytics panel
+ * and the topic filter's results.
+ */
+export function useReprocessTopics() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (documentId: string) =>
+      api.post<DocumentIntelligence>(`/documents/${documentId}/reprocess-topics`).then((e) => e.data),
+    onSuccess: (data, documentId) => {
+      // Written straight into the cache: the response IS the new analysis, so
+      // refetching it would ask the server to repeat what it just said.
+      queryClient.setQueryData(['documents', 'detail', documentId, 'topics'], data);
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['documents', 'detail', documentId, 'related'] }),
+        queryClient.invalidateQueries({ queryKey: ['topics', 'catalog'] }),
+        queryClient.invalidateQueries({ queryKey: ['topics', 'analytics'] }),
+        queryClient.invalidateQueries({ queryKey: ['documents', 'list'] }),
+      ]);
     },
-    staleTime: 5 * 60_000,
-    /**
-     * Changing the range, granularity or subsidiary holds the current cloud and
-     * chart on screen while the next payload loads — the same reasoning as
-     * `useAnalytics` and `useOffsetList`: a chart that unmounts collapses the
-     * page height and reads as a failure rather than a filter change. Dim on
-     * `isPlaceholderData`.
-     */
-    placeholderData: keepPreviousData,
-    enabled: options.enabled ?? true,
   });
 }

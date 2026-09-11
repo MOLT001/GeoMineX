@@ -11,6 +11,13 @@ export interface Pagination {
 export interface CursorPagination {
   nextCursor: string | null;
   limit: number;
+  /**
+   * Set when a filter resolved to more rows than it will page through, so the
+   * client can SAY the set was capped. Without it a truncated result is
+   * indistinguishable from a complete one, which is the shape of silent
+   * incompleteness §9.8 is otherwise careful to avoid.
+   */
+  topicsTruncated?: boolean;
 }
 
 export function sendData<T>(res: Response, data: T, status = 200): void {

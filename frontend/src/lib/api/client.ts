@@ -19,7 +19,12 @@ import { rawFetch, type Envelope } from './rawFetch';
 export interface RequestOptions {
   method?: string;
   body?: unknown;
-  query?: Record<string, string | number | boolean | undefined | null>;
+  /**
+   * An array value becomes a REPEATED parameter (`?topic=a&topic=b`), which is
+   * the form Express and Zod both read back as an array. Comma-joining would
+   * arrive as one string containing a comma and fail validation.
+   */
+  query?: Record<string, string | number | boolean | undefined | null | string[]>;
   signal?: AbortSignal | undefined;
   /** Set for the auth routes, whose credential is the cookie. */
   credentials?: RequestCredentials;
@@ -30,6 +35,12 @@ function buildPath(path: string, query?: RequestOptions['query']): string {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query)) {
     if (value === undefined || value === null || value === '') continue;
+    if (Array.isArray(value)) {
+      // `append`, so every element gets its own occurrence of the key. An empty
+      // array contributes nothing, which is the same as not filtering.
+      for (const item of value) if (item !== '') params.append(key, item);
+      continue;
+    }
     // Boolean filters cross the wire as the STRINGS 'true'/'false' — the
     // backend schemas declare them as string enums, not booleans, so a real
     // boolean is coerced to a string that happens to match. Being explicit

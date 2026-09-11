@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, fetchDocumentBlob } from '@/lib/api/client';
 import { ApiError, NetworkError, classifyAuthFailure, type ApiErrorBody } from '@/lib/api/errors';
@@ -7,6 +7,7 @@ import { tokenStore } from '@/auth/tokenStore';
 import { API_PREFIX } from '@/lib/env';
 import { pollWhile, useCursorList } from '@/lib/lists';
 import { isDocumentPending, type DocumentStatus } from '@/components/ui/StatusBadge';
+import type { IntelligenceStatus } from '@/features/topics/api';
 
 /**
  * Documents — PRD §5.4, §5.5, §8.2.
@@ -42,7 +43,7 @@ export type { DocumentStatus };
  * zero extracted fields, not by this field. `.csv` and `.txt` both map to
  * 'spreadsheet'.
  */
-export type DocumentType = 'pdf' | 'scan' | 'spreadsheet' | 'image';
+export type DocumentType = 'pdf' | 'scan' | 'spreadsheet' | 'image' | 'archive';
 
 // ─── Entities ────────────────────────────────────────────────────────────────
 
@@ -101,6 +102,38 @@ export interface Document {
   processingAttempts: number;
   processedAt: string | null;
   createdAt: string;
+  /**
+   * The document's leading extracted topic.
+   *
+   * OPTIONAL, and the `?` is load-bearing: only `GET /documents` joins it, in
+   * one lookup for the whole page. `GET /documents/:id`, the 201 from upload
+   * and the 200 from retry all return the plain `present()` shape and carry
+   * neither this nor `topicStatus`, so on those it is `undefined` — which is a
+   * third state distinct from `null`.
+   *
+   * `null` on a list row means the document HAS been looked at and has no
+   * leading subject: not analysed yet, or analysed and found to hold too little
+   * text. `topicStatus` says which. For the full analysis of one document use
+   * `useDocumentIntelligence`, which is what the detail page does.
+   */
+  primaryTopic?: { topicId: string; label: string } | null;
+  /**
+   * Extraction state, SEPARATE from `status`. `status` is "was the file read";
+   * this is "was it understood". A validated document with
+   * `topicStatus: 'insufficient_text'` is a correct pair, not a contradiction.
+   *
+   * List rows only — see `primaryTopic`.
+   */
+  topicStatus?: IntelligenceStatus;
+  /**
+   * Why this row matched the search — present ONLY when `q` was sent.
+   *
+   * `['topic']` alone means the filename says nothing about the search term and
+   * the document surfaced through its extracted topics or keywords. Worth
+   * showing: without it a user searching `drilling` sees a report called
+   * "Annual Geological Investigation" and reasonably wonders why.
+   */
+  matchedVia?: ('filename' | 'topic')[];
 }
 
 /**
@@ -120,7 +153,10 @@ export interface DocumentChunk {
    * `.csv`/`.txt`, whose text path never attaches a page.
    */
   pageNumber: number | null;
-  /** ALWAYS null today — the only extraction provider never writes a section. */
+  /**
+   * Always null on a CHUNK today — the local provider sections extracted
+   * FIELDS (see ExtractedFieldSourceLocation) but not the chunks themselves.
+   */
   section: string | null;
 }
 
@@ -128,10 +164,16 @@ export interface DocumentChunk {
  * Inner keys are individually ABSENT when unset, never null
  * (extractedField.model.ts:36-40) — hence `?` rather than `| null`.
  *
- * With the bundled local provider this is always `{ pageNumber?, chunkIndex: 0 }`:
- * `section` is never written, and `chunkIndex` is HARD-CODED to 0
- * (local.adapter.ts:87). It is not a pointer into the chunk array, so do not use
- * it to scroll a citation into view — it points at chunk 0 for every field.
+ * `section` carries the figure's PROVENANCE, and on a table it is what makes
+ * the figure citable: "Standalone · Quarter ended June 30,2025 Un Audited". A
+ * results filing repeats every row label across two statements and four period
+ * columns, so a page number alone does not identify which number was read. It
+ * is absent when the extractor could not establish it — which also drops that
+ * field's confidence into the review band, rather than guessing a period.
+ *
+ * `chunkIndex` is still HARD-CODED to 0 by the local provider. It is not a
+ * pointer into the chunk array, so do not use it to scroll a citation into
+ * view — it points at chunk 0 for every field.
  */
 export interface ExtractedFieldSourceLocation {
   pageNumber?: number;
@@ -225,11 +267,27 @@ export interface DocumentFilters {
    */
   requiresReview?: 'true' | 'false';
   /**
-   * Mongo `$text` over the `{ originalFilename, tags }` index ONLY
-   * (document.model.ts:100) — never over extracted values (§8.2). 1..120 chars.
-   * Relevance does not affect ordering; the sort stays `_id` descending.
+   * Matches the `{ originalFilename, tags }` text index AND documents whose
+   * extracted TOPICS or KEYWORDS match — which is how a search for `drilling`
+   * reaches a report called "Annual Geological Investigation". Extracted VALUES
+   * are still never searched (§8.2). 1..120 chars.
+   *
+   * Ordering is unchanged: still `_id` descending, still cursor-paginated.
+   * Topic matching widens the SET, it does not re-rank it — read `matchedVia`
+   * on each row to show why it is there.
    */
   q?: string;
+  /**
+   * Taxonomy slugs (`drilling`) or discovered ids (`discovered:sand-stowing`).
+   * At most 8. An id the taxonomy does not know is a 400, not an empty list —
+   * so never send a slug a user typed.
+   */
+  topic?: string[];
+  /**
+   * `all` intersects several topics, `any` unions them. The server defaults to
+   * `any`; send `all` only when the UI actually offers the distinction.
+   */
+  topicMatch?: 'any' | 'all';
 }
 
 /**
@@ -261,6 +319,12 @@ export function useDocuments(
       type: filters.type,
       requiresReview: filters.requiresReview,
       q: filters.q,
+      // An empty array contributes no parameter at all, so it is the same as
+      // not filtering — no need for the caller to strip it.
+      topic: filters.topic,
+      // Only meaningful beside two or more topics; sending it alone is harmless
+      // but noisy, so it rides with them.
+      topicMatch: filters.topic && filters.topic.length > 1 ? filters.topicMatch : undefined,
     },
     limit: options.limit ?? 25,
     enabled: options.enabled ?? true,
@@ -290,7 +354,8 @@ const DOCUMENT_POLL_MS = 3000;
  * to tell the user which; that is the point of the convention.
  */
 export function useDocument(documentId: string, options: { enabled?: boolean } = {}) {
-  return useQuery({
+  const queryClient = useQueryClient();
+  const query = useQuery({
     queryKey: ['documents', 'detail', documentId],
     queryFn: async ({ signal }) => {
       const { data } = await api.get<Document>(`/documents/${documentId}`, { signal });
@@ -319,6 +384,39 @@ export function useDocument(documentId: string, options: { enabled?: boolean } =
     staleTime: 0,
     refetchOnWindowFocus: true,
   });
+
+  /**
+   * When the worker finishes, the corpus-wide figures are wrong — say so.
+   *
+   * The upload mutation already invalidates the dashboard, but it fires at
+   * ENQUEUE, when the document is still `queued` and has changed none of the
+   * figures that matter: nothing is validated, nothing is awaiting review, and
+   * no field has been extracted to be accurate about. The numbers only move
+   * when the worker lands, and nothing was watching for that — so the landing
+   * page went on showing the figures it had read a minute earlier.
+   *
+   * This is the one place in the app that observes the transition, because it
+   * is the only thing polling for it. Invalidating rather than refetching means
+   * a dashboard nobody is looking at costs nothing until it is opened.
+   */
+  const status = query.data?.status;
+  const wasPending = useRef(false);
+  useEffect(() => {
+    if (status === undefined) return;
+    if (isDocumentPending(status)) {
+      wasPending.current = true;
+      return;
+    }
+    if (!wasPending.current) return;
+    wasPending.current = false;
+    void Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
+      queryClient.invalidateQueries({ queryKey: ['documents', 'list'] }),
+      queryClient.invalidateQueries({ queryKey: ['topics'] }),
+    ]);
+  }, [status, queryClient]);
+
+  return query;
 }
 
 /**
@@ -492,7 +590,10 @@ export const MAX_UPLOAD_BYTES = 26_214_400;
  * fileValidation.ts:27-53. Usable directly as the `accept` attribute
  * (`ACCEPTED_UPLOAD_EXTENSIONS.join(',')`). The extension decides the stored
  * `type`: `.pdf`→'pdf', `.png`/`.jpg`/`.jpeg`→'image', `.tif`/`.tiff`→'scan',
- * `.xlsx`/`.csv`/`.txt`→'spreadsheet'.
+ * `.xlsx`/`.csv`/`.txt`→'spreadsheet', `.zip`→'archive'.
+ *
+ * A `.zip` is unpacked server-side and its members read into the SAME document,
+ * so an archive is one upload with one audit trail rather than many.
  */
 export const ACCEPTED_UPLOAD_EXTENSIONS = [
   '.pdf',
@@ -504,6 +605,7 @@ export const ACCEPTED_UPLOAD_EXTENSIONS = [
   '.xlsx',
   '.csv',
   '.txt',
+  '.zip',
 ] as const;
 
 /** Zod caps the split tag array at 10 entries of 1..40 characters (document.schema.ts:12-16). */
@@ -841,9 +943,12 @@ export function useOverrideExtractedField() {
         // (document.service.ts:381), so every figure derived from them is now out
         // of date — an override that leaves the dashboard showing the old number
         // is exactly the traceability failure §13 exists to prevent.
+        //
+        // No ['topics'] invalidation: the endpoint still exists and its server
+        // cache is still dropped, but no client query registers that key while
+        // the screen is withheld. Restore it alongside the screen.
         queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
         queryClient.invalidateQueries({ queryKey: ['analytics'] }),
-        queryClient.invalidateQueries({ queryKey: ['topics'] }),
       ]),
   });
 }

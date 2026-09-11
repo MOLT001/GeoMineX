@@ -14,6 +14,8 @@ import { DocumentChunk } from '../src/modules/documents/documentChunk.model.js';
 import { drainProcessing } from '../src/modules/documents/document.worker.js';
 import { drainQueries } from '../src/modules/queries/query.worker.js';
 import { indexDocumentTerms } from '../src/modules/topics/termIndexer.js';
+import { indexDocumentTopics } from '../src/modules/topics/topicIndexer.js';
+import { clearCorpusBaselineCache } from '../src/modules/topics/corpusBaseline.js';
 import { buildStorageKey } from '../src/services/storage/index.js';
 import {
   UNSUPPORTED_ANSWER,
@@ -184,6 +186,10 @@ export async function makeDocumentWithChunks(opts: {
   createdAt?: Date;
   status?: 'validated' | 'failed' | 'queued';
   indexTerms?: boolean;
+  /** Run topic extraction, as `document.worker.ts` does after a real ingestion. */
+  indexTopics?: boolean;
+  /** Lets a test plant a scan and exercise the OCR-tolerant path (§22). */
+  ocrConfidence?: number;
 }): Promise<{ documentId: string; chunkIds: string[] }> {
   plantedDocuments += 1;
   const filename = opts.filename ?? `planted-${plantedDocuments}.pdf`;
@@ -209,7 +215,9 @@ export async function makeDocumentWithChunks(opts: {
     tags: [subsidiary.code, month, kind.type],
     requiresReview: false,
     processingAttempts: status === 'queued' ? 0 : 1,
-    ...(status === 'validated' ? { ocrConfidence: 0.95, processedAt: createdAt } : {}),
+    ...(status === 'validated'
+      ? { ocrConfidence: opts.ocrConfidence ?? 0.95, processedAt: createdAt }
+      : {}),
   });
 
   await DocumentModel.collection.updateOne({ _id: doc._id }, { $set: { createdAt } });
@@ -232,6 +240,25 @@ export async function makeDocumentWithChunks(opts: {
     await indexDocumentTerms(
       { _id: doc._id, subsidiaryId: new Types.ObjectId(opts.subsidiaryId), createdAt },
       chunkTexts.map((text) => ({ text })),
+    );
+  }
+
+  // Mirrors the worker's order: terms first, then topics, so a planted corpus
+  // has the same shape as an ingested one. The baseline cache is cleared first
+  // because a test plants several documents inside one TTL window and would
+  // otherwise score them all against whatever existed at the first call.
+  if (opts.indexTopics ?? true) {
+    clearCorpusBaselineCache(new Types.ObjectId(opts.subsidiaryId));
+    await indexDocumentTopics(
+      {
+        _id: doc._id,
+        subsidiaryId: new Types.ObjectId(opts.subsidiaryId),
+        originalFilename: filename,
+        type: kind.type,
+        createdAt,
+      },
+      chunkTexts.map((text, i) => ({ text, pageNumber: i + 1 })),
+      opts.ocrConfidence ?? 0.95,
     );
   }
 

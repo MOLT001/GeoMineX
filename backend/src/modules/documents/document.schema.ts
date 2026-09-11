@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { topicListSchema } from '../topics/topics.schema.js';
 import { safeText } from '../../utils/safeText.js';
 import { DOCUMENT_STATUSES, DOCUMENT_TYPES } from './document.model.js';
 
@@ -24,11 +25,36 @@ export const listDocumentsQuerySchema = z.object({
   status: z.enum(DOCUMENT_STATUSES).optional(),
   type: z.enum(DOCUMENT_TYPES).optional(),
   requiresReview: z.enum(['true', 'false']).optional(),
-  /** Text search over filename/tags only — never over extracted values (§8.2). */
+  /**
+   * Text search. Matches filename and tags through the document text index, and
+   * — since Topic Intelligence — also documents whose extracted TOPICS or
+   * KEYWORDS match, which is how a search for `drilling` reaches a report whose
+   * filename never says it (§9). Extracted VALUES are still never searched (§8.2).
+   */
   q: z.string().trim().min(1).max(120).optional(),
+  /** §8 — repeatable: `?topic=drilling&topic=coal-reserves`. */
+  topic: topicListSchema.optional(),
+  /**
+   * How to combine several topics. `all` is the intersection §8 asks for when a
+   * user stacks filters; `any` is the union, and is the default because it is
+   * the one that cannot surprise someone by returning nothing.
+   */
+  topicMatch: z.enum(['any', 'all']).default('any'),
 });
 
 export const documentIdParamSchema = z.object({ id: objectId });
+
+/** §4.5 — the conflict review queue. */
+export const conflictsQuerySchema = z.object({
+  subsidiaryId: objectId.optional(),
+  status: z.enum(['open', 'acknowledged', 'resolved']).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+
+/** §17 — how many related documents to return. */
+export const relatedDocumentsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(20).default(5),
+});
 
 export const overrideFieldSchema = z.object({
   value: safeText({ max: 2000, label: 'value' }),

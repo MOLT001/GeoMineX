@@ -31,6 +31,11 @@ export const AUDIT_ACTIONS = [
   'document.processed',
   'document.processing_failed',
   'document.retried',
+  // A reviewer disagreeing with the analysis and asking for it again. Separate
+  // from `document.retried`, which re-reads the FILE: the two have different
+  // costs and different reasons, and an audit trail that merges them cannot
+  // answer which one someone actually did.
+  'document.topics_reprocessed',
   'document.downloaded',
   'extracted_field.overridden',
   'report_template.created',

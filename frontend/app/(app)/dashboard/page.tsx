@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/Badge';
 import { ErrorState, LoadingBlock } from '@/components/ui/Feedback';
 import { PageHeader, Section } from '@/components/ui/Layout';
 import { ReportStatusBadge } from '@/components/ui/StatusBadge';
+import { DocumentIntelligenceSummary } from '@/features/topics/components/DocumentIntelligenceSummary';
 import { formatRelative, formatDateTime } from '@/lib/datetime';
 
 /** Dashboard — PRD §5.3. */
@@ -80,6 +81,13 @@ export default function DashboardPage() {
               <Count label="Failed" value={data.documents.failed} tone="danger" />
             </div>
           </Section>
+
+          {/*
+            After the document counts, before the work queues: it answers "what
+            is this corpus about", which sits naturally between "how much of it
+            is there" and "what needs me today".
+          */}
+          <DocumentIntelligenceSummary />
 
           {/*
             ─── WHY THESE TWO SECTIONS ARE BANDED CARDS AND THE TWO ABOVE ARE NOT ─

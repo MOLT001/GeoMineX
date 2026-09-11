@@ -12,6 +12,12 @@
  * against a real HTML response (see the CSP checks in the frontend test suite).
  */
 
+/**
+ * The one third-party origin this policy admits. Imported rather than repeated
+ * so the policy and the caller cannot drift apart.
+ */
+import { GEMINI_ORIGIN } from '@/features/queries/gemini';
+
 /** Directives that never vary between environments. */
 const SHARED = {
   'default-src': ["'self'"],
@@ -98,7 +104,24 @@ export function buildCsp(nonce: string, isDev: boolean): string {
      * straight at the Express origin, the app breaks immediately and visibly
      * instead of quietly working until the cookie stops being sent.
      */
-    'connect-src': isDev ? ["'self'", 'ws:', 'http://localhost:*'] : ["'self'"],
+    /**
+     * `'self'` plus ONE named third party, and the exception is listed here
+     * rather than widened to `https:` so that what leaves this origin stays
+     * legible at a glance.
+     *
+     * The Gemini origin is required by the follow-up assistant
+     * (features/queries/gemini.ts), which calls Google from the browser while
+     * the backend is not deployed. Without it the request fails as a bare
+     * TypeError with no status — indistinguishable from being offline, which is
+     * why that file names this as the likely cause in its error copy.
+     *
+     * It should be REMOVED the moment the assistant moves behind the API, at
+     * which point this returns to `'self'` and resumes being the tripwire the
+     * same-site topology relies on (§11.9).
+     */
+    'connect-src': isDev
+      ? ["'self'", 'ws:', 'http://localhost:*', GEMINI_ORIGIN]
+      : ["'self'", GEMINI_ORIGIN],
   };
 
   const policy = Object.entries(directives)

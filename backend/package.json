@@ -12,6 +12,7 @@
     "dev:db": "tsx dev-db.ts",
     "seed": "tsx src/scripts/seed.ts",
     "backfill:terms": "tsx src/scripts/backfillTermFrequencies.ts",
+    "backfill:topics": "tsx src/scripts/backfillDocumentTopics.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -21,19 +22,23 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "audit:ci": "npm audit --audit-level=high",
-    "indexes:sync": "tsx src/scripts/syncIndexes.ts"
+    "indexes:sync": "tsx src/scripts/syncIndexes.ts",
+    "vision:check": "tsx src/scripts/checkVision.ts"
   },
   "dependencies": {
+    "@napi-rs/canvas": "^1.0.9",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "express-rate-limit": "^8.7.0",
+    "fflate": "^0.8.3",
     "file-type": "^22.0.2",
     "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.9.4",
     "multer": "^2.3.0",
     "nodemailer": "^9.1.1",
+    "tesseract.js": "^7.0.0",
     "unpdf": "^1.8.1",
     "winston": "^3.19.0",
     "zod": "^4.5.4"

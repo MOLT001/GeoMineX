@@ -7,6 +7,7 @@ import { Field, Select, TextInput } from '@/components/ui/Field';
 import { SearchIcon } from '@/components/ui/Icon';
 import { Toolbar } from '@/components/ui/Layout';
 import type { DocumentFilters, DocumentStatus, DocumentType } from '@/features/documents/api';
+import { TopicFilter } from '@/features/topics/components/TopicFilter';
 
 /**
  * The document-list filter strip — PRD §5.4.
@@ -32,6 +33,10 @@ export interface DocumentListFilters {
   type: DocumentType | '';
   requiresReview: 'true' | 'false' | '';
   q: string;
+  /** Topic ids. Empty means no topic filter — there is no '' placeholder here. */
+  topics: string[];
+  /** Only sent when two or more topics are selected. */
+  topicMatch: 'any' | 'all';
 }
 
 export const EMPTY_DOCUMENT_FILTERS: DocumentListFilters = {
@@ -40,6 +45,8 @@ export const EMPTY_DOCUMENT_FILTERS: DocumentListFilters = {
   type: '',
   requiresReview: '',
   q: '',
+  topics: [],
+  topicMatch: 'any',
 };
 
 /**
@@ -64,6 +71,7 @@ export const DOCUMENT_TYPE_LABELS: Record<DocumentType, string> = {
   scan: 'Scan (.tif)',
   spreadsheet: 'Spreadsheet or text',
   image: 'Image',
+  archive: 'Archive (.zip)',
 };
 
 const REVIEW_LABELS: Record<'true' | 'false', string> = {
@@ -77,7 +85,8 @@ export function hasActiveFilters(filters: DocumentListFilters): boolean {
     filters.status !== '' ||
     filters.type !== '' ||
     filters.requiresReview !== '' ||
-    filters.q.trim() !== ''
+    filters.q.trim() !== '' ||
+    filters.topics.length > 0
   );
 }
 
@@ -89,6 +98,10 @@ export function toDocumentFilters(filters: DocumentListFilters): DocumentFilters
     type: filters.type || undefined,
     requiresReview: filters.requiresReview || undefined,
     q: filters.q.trim() || undefined,
+    // An empty array serialises to no parameter at all, so it needs no
+    // placeholder of its own — unlike the string filters above.
+    topic: filters.topics,
+    topicMatch: filters.topicMatch,
   };
 }
 
@@ -191,6 +204,25 @@ export function DocumentFilterBar({
           Search
         </Button>
       </form>
+
+      {/*
+        Topic takes its own row directly under Search, for the same reason
+        Search does: it can grow a second line of chips, and inline it would
+        push the four bottom-aligned selects down and leave a band of empty
+        space above them.
+
+        It sits ABOVE the file-type and status selects because it is the filter
+        this screen exists to offer — "what is this about" is the question a
+        reader arrives with, and format and pipeline state are how they narrow
+        afterwards.
+      */}
+      <TopicFilter
+        value={value.topics}
+        match={value.topicMatch}
+        onChange={(topics) => onChange({ ...value, topics })}
+        onMatchChange={(topicMatch) => onChange({ ...value, topicMatch })}
+        subsidiaryId={value.subsidiaryId || undefined}
+      />
 
       <div className="min-w-52 flex-1">
         <SubsidiaryPicker

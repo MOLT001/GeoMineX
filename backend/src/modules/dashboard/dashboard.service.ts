@@ -221,6 +221,10 @@ export async function getMetrics(user: AuthContext): Promise<DashboardMetrics> {
       $set: {
         ...fresh,
         scopeKey: key,
+        // What makes the row invalidatable when a document lands — see the note
+        // on the field. `null` is the unscoped admin view and stores as `[]`,
+        // which `invalidateForSubsidiary` treats as covering every subsidiary.
+        subsidiaryIds: scope.subsidiaryIds ?? [],
         expiresAt: new Date(Date.now() + env.METRICS_CACHE_TTL_SECONDS * 1000),
       },
     },

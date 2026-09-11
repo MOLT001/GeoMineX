@@ -169,6 +169,35 @@ function buildWarnings(q: QueryAttrs): string[] {
   if (q.answerStatus === 'unsupported') {
     out.push('No authorised source in scope supports an answer to this question.');
   }
+  /**
+   * §4.5 — the sources cited here contradict each other.
+   *
+   * Deliberately the LOUDEST warning on the list and deliberately not a
+   * correction: the system cannot tell a revision from an error, so it names
+   * both readings, names the documents they came from, and asks for a human.
+   * An answer drawn from documents that disagree is not wrong, but it is not
+   * safe to quote either.
+   */
+  for (const conflict of q.conflictingMetrics ?? []) {
+    const readings = conflict.readings
+      .map((r) => `${r.value} (${r.originalFilename})`)
+      .join(' vs ');
+    /**
+     * Say WHICH trigger fired, or the second case reads as a bug.
+     *
+     * Asked about G9, a reader was shown a warning about Coal Production with
+     * no way to see that it fired because the answer above literally states
+     * 128,450 — a figure the corpus disputes. Naming that figure turns a
+     * confusing caveat into an obviously correct one.
+     */
+    const because =
+      conflict.reason === 'quoted' && conflict.quoted
+        ? `This answer states ${conflict.quoted}, and sources disagree on ${conflict.metricLabel}`
+        : `Sources disagree on ${conflict.metricLabel}`;
+    out.push(
+      `CONFLICTING DATA FOUND — HUMAN REVIEW NEEDED. ${because}: ${readings}. Do not quote either figure until a reviewer establishes which is authoritative.`,
+    );
+  }
   return out;
 }
 

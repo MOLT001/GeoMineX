@@ -6,8 +6,10 @@ import { uploadSingleDocument } from '../../middleware/upload.js';
 import * as controller from './document.controller.js';
 import {
   documentIdParamSchema,
+  conflictsQuerySchema,
   listDocumentsQuerySchema,
   overrideFieldSchema,
+  relatedDocumentsQuerySchema,
   uploadBodySchema,
 } from './document.schema.js';
 
@@ -33,6 +35,14 @@ documentRouter.post(
 
 documentRouter.get('/', validate({ query: listDocumentsQuerySchema }), controller.list);
 
+/**
+ * §4.5 — the conflict review queue.
+ *
+ * Registered BEFORE `/:id`, or Express reads the literal `conflicts` as a
+ * document id and answers 400 for a malformed ObjectId.
+ */
+documentRouter.get('/conflicts', validate({ query: conflictsQuerySchema }), controller.conflicts);
+
 documentRouter.get('/:id', validate({ params: documentIdParamSchema }), controller.getOne);
 
 /** The most security-sensitive route in the system — see the service. */
@@ -44,6 +54,32 @@ documentRouter.get(
   '/:id/extracted-fields',
   validate({ params: documentIdParamSchema }),
   controller.extractedFields,
+);
+
+/**
+ * Topic Intelligence — §12, §17, §19.
+ *
+ * All three are readable by every role, including read-only MoC officials:
+ * they describe a document the caller can already open, and the service proves
+ * that access before touching the intelligence collections.
+ */
+documentRouter.get('/:id/topics', validate({ params: documentIdParamSchema }), controller.topics);
+
+documentRouter.get(
+  '/:id/related',
+  validate({ params: documentIdParamSchema, query: relatedDocumentsQuerySchema }),
+  controller.related,
+);
+
+/**
+ * Re-extracting topics CHANGES stored analysis, so it is gated to the roles
+ * that may already correct extracted figures (§5.5) — an MoC official reads.
+ */
+documentRouter.post(
+  '/:id/reprocess-topics',
+  roleGuard('admin', 'cil_user'),
+  validate({ params: documentIdParamSchema }),
+  controller.reprocessTopics,
 );
 
 documentRouter.post(

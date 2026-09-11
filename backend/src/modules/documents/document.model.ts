@@ -1,7 +1,9 @@
 import mongoose, { Schema, type HydratedDocument, type Model, type Types } from 'mongoose';
 
 /** PRD §4.1 — accepted source material. */
-export const DOCUMENT_TYPES = ['pdf', 'scan', 'spreadsheet', 'image'] as const;
+// `archive` is a zip of the others — PS 26023 names archives as an input, and
+// its members are read into this one document rather than fanned out into many.
+export const DOCUMENT_TYPES = ['pdf', 'scan', 'spreadsheet', 'image', 'archive'] as const;
 export type DocumentType = (typeof DOCUMENT_TYPES)[number];
 
 /** PRD §4.1 — queued -> processing -> validated / failed. */

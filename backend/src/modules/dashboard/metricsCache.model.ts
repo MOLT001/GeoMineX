@@ -1,4 +1,4 @@
-import mongoose, { Schema, type HydratedDocument, type Model } from 'mongoose';
+import mongoose, { Schema, Types, type HydratedDocument, type Model } from 'mongoose';
 
 /**
  * Pre-computed dashboard metrics — PRD §4.6.
@@ -28,6 +28,18 @@ export interface MetricsCacheAttrs {
    * grant list sitting on a unique index.
    */
   scopeKey: string;
+  /**
+   * The RESOLVED scope this row was computed over; `[]` is the unscoped admin
+   * view. Redundant against `scopeKey` for reading — the key is a digest — but
+   * it is the only thing that makes the row INVALIDATABLE.
+   *
+   * Without it the dashboard could only ever go stale and wait: a document
+   * finishing dropped the topic and analytics caches and left this one
+   * untouched, so the landing page went on reporting zero documents for the
+   * full `METRICS_CACHE_TTL_SECONDS` after an upload had already been
+   * processed. A digest cannot be searched by subsidiary; this can.
+   */
+  subsidiaryIds: Types.ObjectId[];
   extractionAccuracyPercent: number;
   automationCoveragePercent: number;
   timeSavedPercent: number;
@@ -50,6 +62,9 @@ export type MetricsCacheDoc = HydratedDocument<MetricsCacheAttrs>;
 const metricsCacheSchema = new Schema<MetricsCacheAttrs>(
   {
     scopeKey: { type: String, required: true },
+    // Defaulted for the same reason `queriesPendingReview` is: a row written by
+    // the previous deploy must stay readable rather than failing validation.
+    subsidiaryIds: { type: [Schema.Types.ObjectId], required: true, default: [] },
     extractionAccuracyPercent: { type: Number, required: true },
     automationCoveragePercent: { type: Number, required: true },
     timeSavedPercent: { type: Number, required: true },
@@ -68,6 +83,8 @@ const metricsCacheSchema = new Schema<MetricsCacheAttrs>(
 );
 
 metricsCacheSchema.index({ scopeKey: 1 }, { unique: true });
+// Invalidation looks rows up by the scope they cover, never by the digest.
+metricsCacheSchema.index({ subsidiaryIds: 1 });
 // Stale entries self-expire rather than accumulating (§8.2).
 metricsCacheSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 

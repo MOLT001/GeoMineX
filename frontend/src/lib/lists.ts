@@ -11,7 +11,8 @@ import { isCursorPagination, type OffsetPagination } from '@/lib/api/rawFetch';
  * between pages, which reads as a failed request.
  */
 
-export type QueryParams = Record<string, string | number | boolean | undefined | null>;
+/** Mirrors `RequestOptions['query']`: an array becomes a repeated parameter. */
+export type QueryParams = Record<string, string | number | boolean | undefined | null | string[]>;
 
 /**
  * A cursor-paginated list — documents, queries, audit logs.

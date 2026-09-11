@@ -90,22 +90,63 @@ export function createLocalAiProvider(): AiProvider {
         .slice(0, env.AI_ANSWER_MAX_PASSAGES);
 
       // 2. Sentence selection within the kept passages.
+      const sentences = top.flatMap((p) => splitSentences(p.text).map((s) => ({ p, s })));
+
+      /**
+       * How much each query term is worth, measured across the candidate
+       * sentences themselves.
+       *
+       * ─── WHY A PLAIN OVERLAP COUNT IS NOT ENOUGH ────────────────────────────
+       * Counting matched terms equally treats "august" and "G9" as the same
+       * evidence. On a monthly production report "august" is on a dozen lines
+       * and "G9" on exactly one — the one that answers the question — so
+       * "(AUGUST 2026)" scored two matches against the grade row's one and the
+       * answer came back quoting the report's date instead of its figures.
+       *
+       * The passage ranker above already weights by inverse document frequency;
+       * this is the same idea one level down, over sentences.
+       */
+      const sentenceDf = new Map<string, number>();
+      for (const { s } of sentences) {
+        for (const t of new Set(tokenize(s.text))) sentenceDf.set(t, (sentenceDf.get(t) ?? 0) + 1);
+      }
+      const termWeight = (t: string): number =>
+        Math.log(1 + sentences.length / (1 + (sentenceDf.get(t) ?? 0)));
+      const uniqueQTokens = [...new Set(qTokens)];
+      const totalWeight = uniqueQTokens.reduce((sum, t) => sum + termWeight(t), 0);
+
       const candidates: { ref: string; order: number; sIndex: number; text: string; score: number }[] = [];
-      for (const p of top) {
-        for (const s of splitSentences(p.text)) {
-          const sTokens = new Set(tokenize(s.text));
-          const overlap = [...new Set(qTokens)].filter((t) => sTokens.has(t)).length;
-          if (overlap === 0) continue;
-          const positional = Math.pow(0.9, s.index);          // an opening sentence carries the claim
-          const numericBonus = /\d/.test(s.text) ? 0.25 : 0;  // a parliamentary answer wants a figure
-          candidates.push({
-            ref: p.ref,
-            order: p.order,
-            sIndex: s.index,
-            text: s.text,
-            score: round6((overlap / Math.max(1, qTokens.length)) * positional + numericBonus),
-          });
-        }
+      for (const { p, s } of sentences) {
+        const sTokens = new Set(tokenize(s.text));
+        const matched = uniqueQTokens.filter((t) => sTokens.has(t));
+        if (matched.length === 0) continue;
+        const relevance = matched.reduce((sum, t) => sum + termWeight(t), 0) / Math.max(0.001, totalWeight);
+        /**
+         * Floored, because a TABLE is not prose.
+         *
+         * The decay encodes "an opening sentence carries the claim", which is
+         * true of a letter and false of a return: the row a reader wants sits
+         * thirty lines down, where an unfloored 0.9^30 is 0.04 and no amount of
+         * relevance can recover it.
+         */
+        const positional = Math.max(0.35, Math.pow(0.9, s.index));
+        /**
+         * A parliamentary answer wants a FIGURE — and a year is not one.
+         *
+         * The bonus used to fire on any digit, so `(AUGUST 2026)` collected it
+         * and outscored the grade row that actually answered the question. The
+         * year is removed before the test, which leaves a line bearing a real
+         * quantity ahead of one that only names the period.
+         */
+        const withoutYears = s.text.replace(/\b(?:19|20)\d{2}\b/g, '');
+        const numericBonus = /\d/.test(withoutYears) ? 0.25 : 0;
+        candidates.push({
+          ref: p.ref,
+          order: p.order,
+          sIndex: s.index,
+          text: s.text,
+          score: round6(relevance * positional + numericBonus),
+        });
       }
 
       const chosen = candidates

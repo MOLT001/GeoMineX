@@ -32,6 +32,17 @@ var/
 # Test runtime artifacts
 .mongodb-binaries/
 
+# Tesseract language model, downloaded on first OCR use (~5 MB). A build
+# artefact, not source — but an air-gapped deployment must ship eng.traineddata
+# in here rather than relying on the cold-start download.
+#
+# BOTH paths are ignored: the `.tesseract/` directory is where a deployment is
+# meant to place it, and the bare `*.traineddata` is where tesseract.js actually
+# writes it on a cold start — the working directory. Only the directory was
+# listed, so a 5 MB binary sat untracked-but-committable in the backend root.
+.tesseract/
+*.traineddata
+
 # OS / editor noise
 .DS_Store
 Thumbs.db

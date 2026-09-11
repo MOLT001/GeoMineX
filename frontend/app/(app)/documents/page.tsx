@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/auth/AuthProvider';
@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/Button';
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/Feedback';
 import {
   FileTextIcon,
+  ArchiveIcon,
   ImageIcon,
   RefreshIcon,
   ScanIcon,
@@ -33,6 +34,7 @@ import {
   type DocumentListFilters,
 } from '@/features/documents/components/DocumentFilterBar';
 import { DocumentStats } from '@/features/documents/components/DocumentStats';
+import { TopicChip } from '@/features/topics/components/TopicChip';
 import { UploadPanel } from '@/features/documents/components/UploadPanel';
 import { formatDateTime } from '@/lib/datetime';
 import { formatBytes } from '@/lib/format';
@@ -83,13 +85,38 @@ const TYPE_ICONS: Record<DocumentType, ReactNode> = {
   scan: <ScanIcon size={18} strokeWidth={2.4} />,
   spreadsheet: <TableIcon size={18} strokeWidth={2.4} />,
   image: <ImageIcon size={18} strokeWidth={2.4} />,
+  archive: <ArchiveIcon size={18} strokeWidth={2.4} />,
 };
 
 type ViewMode = 'list' | 'grid';
 
+/**
+ * Seed the topic filter from `?topic=` — how a chip anywhere else in the app
+ * arrives here.
+ *
+ * The parameter is consumed and removed once read, which makes local state the
+ * single owner of the filter from that point on. Leaving it in the URL would
+ * give the screen two sources of truth: clearing the filter in the bar would
+ * leave the URL still asserting it, and any later re-read would put it back.
+ *
+ * `window.location` rather than `useSearchParams`, so the page does not acquire
+ * a Suspense requirement for one read that happens once on mount. `replaceState`
+ * rather than `router.replace` for the same reason it is used on the invite
+ * screen: it edits the address bar without scheduling a navigation.
+ */
+function useTopicFromUrl(setFilters: (update: (prev: DocumentListFilters) => DocumentListFilters) => void) {
+  useEffect(() => {
+    const topics = new URLSearchParams(window.location.search).getAll('topic');
+    if (topics.length === 0) return;
+    setFilters((previous) => ({ ...previous, topics }));
+    window.history.replaceState(null, '', window.location.pathname);
+  }, [setFilters]);
+}
+
 export default function DocumentsPage() {
   const { user } = useAuth();
   const [filters, setFilters] = useState<DocumentListFilters>(EMPTY_DOCUMENT_FILTERS);
+  useTopicFromUrl(setFilters);
   const [view, setView] = useState<ViewMode>('list');
   /** Bumped whenever the filter set is replaced wholesale — see applyFilter. */
   const [filterReset, setFilterReset] = useState(0);
@@ -403,6 +430,27 @@ function DocumentIdentity({ doc, className }: { doc: Document; className?: strin
         <span className="mt-0.5 block text-xs text-text-muted">
           {DOCUMENT_TYPE_LABELS[doc.type]} · {formatBytes(doc.sizeBytes)}
         </span>
+        {/*
+          The leading topic, under the filename — the one line that turns a list
+          of filenames into a list of subjects.
+
+          A plain chip, not a link. Clicking it would navigate to this same
+          route with a query string, which does not remount the page, so the
+          filter would silently not apply. The filter bar directly above is
+          where topics are chosen, and it is two feet from here.
+        */}
+        {doc.primaryTopic ? (
+          <span className="mt-1 flex flex-wrap items-center gap-1.5">
+            <TopicChip label={doc.primaryTopic.label} />
+            {/*
+              Why this row is in a search result at all. Shown only when the
+              filename does NOT explain it — otherwise it is noise on every row.
+            */}
+            {doc.matchedVia?.includes('topic') && !doc.matchedVia.includes('filename') ? (
+              <span className="text-xs text-text-muted">matched on topic</span>
+            ) : null}
+          </span>
+        ) : null}
       </div>
     </div>
   );
